@@ -1,0 +1,16 @@
+{
+  "devices": [
+    {
+      "mac": "",
+      "name": "SWISS MILITARY BL3",
+      "last_connected": 1790353607,
+      "volume": 55
+    },
+    {
+      "mac": "",
+      "name": "WH-CH520",
+      "last_connected": 1790309849,
+      "volume": 127
+    }
+  ]
+}

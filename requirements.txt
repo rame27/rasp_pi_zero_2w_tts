@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+edge-tts
+aiofiles
+httpx
+beautifulsoup4
+lxml
+pysbd

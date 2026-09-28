@@ -1,0 +1,449 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+import urllib.parse
+import uuid
+
+import edge_tts
+
+from config import settings
+from models import RoleInfo, SegmentInfo, StoryInfo, StoryPlan
+from services import text_source
+from services.audio import _ensure_speaker_connected, _write_speak_metadata, is_segment_file
+from services.groq_llm import DEFAULT_VOICE, slice_text
+
+log = logging.getLogger(__name__)
+
+_tasks: dict[str, dict] = {}
+
+_combine_lock = threading.Lock()
+
+_play_proc: asyncio.subprocess.Process | None = None
+
+
+def set_play_proc(proc) -> None:
+    global _play_proc
+    _play_proc = proc
+
+
+def clear_play_proc(proc) -> None:
+    global _play_proc
+    if _play_proc is proc:
+        _play_proc = None
+
+
+def stop_playback() -> None:
+    global _play_proc
+    if _play_proc is not None and _play_proc.returncode is None:
+        try:
+            _play_proc.kill()
+        except ProcessLookupError:
+            pass
+    _play_proc = None
+
+
+def cancel_all() -> None:
+    """Cancel all running generation tasks and stop any playback."""
+    for task in _tasks.values():
+        if task["state"] == "running":
+            task["cancel"] = True
+    stop_playback()
+
+
+def _safe_name(name: str) -> str:
+    if not name or name == "." or name == "..":
+        raise ValueError("Invalid story name")
+    if os.sep in name or "\\" in name:
+        raise ValueError("Invalid story name")
+    if "'" in name or "\n" in name or "\r" in name:
+        raise ValueError("Invalid story name")
+    return name
+
+
+def speak_name_from_url(url: str) -> str:
+    """Derive a filesystem-safe speak name from a URL (basename, extension stripped).
+
+    Returns "" when the URL has no usable basename (caller falls back to a hex id).
+    """
+    parsed = urllib.parse.urlparse(str(url))
+    base = os.path.basename(parsed.path.rstrip("/"))
+    if not base:
+        return ""
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", base).strip(".-")
+    root, _ext = os.path.splitext(name)
+    name = root or name
+    if not name or name in (".", ".."):
+        return ""
+    return name
+
+
+def stored_voice(name: str) -> str | None:
+    """Voice used by an existing URL-speak archive (from its metadata.json)."""
+    meta_path = os.path.join(settings.speak_text_dir, name, "metadata.json")
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        roles = meta.get("roles") or []
+        if roles:
+            return roles[0].get("voice")
+    except (OSError, json.JSONDecodeError, IndexError):
+        pass
+    return None
+
+
+def stored_plan(name: str) -> StoryPlan | None:
+    """Reuse the plan of an already-processed URL-speak archive (skip the LLM).
+
+    Returns None when the archive has no usable plan (e.g. a plain URL speak
+    that was never analyzed as a story).
+    """
+    meta_path = os.path.join(settings.speak_text_dir, name, "metadata.json")
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        roles = [RoleInfo(role=r["role"], voice=r["voice"]) for r in meta.get("roles", [])]
+        segments = [
+            SegmentInfo(role=s["role"], start_word=s["start_word"], end_word=s["end_word"])
+            for s in meta.get("segments", [])
+        ]
+        if not roles or not segments:
+            return None
+        return StoryPlan(
+            story_name=meta.get("story_name", name),
+            roles=roles,
+            segments=segments,
+            llm_response=meta.get("llm_response"),
+        )
+    except (OSError, json.JSONDecodeError, KeyError):
+        return None
+
+
+def create_task() -> str:
+    now = time.time()
+    stale = [tid for tid, t in _tasks.items() if t["state"] != "running" and now - t.get("_ts", 0) > 3600]
+    for tid in stale:
+        del _tasks[tid]
+    task_id = uuid.uuid4().hex[:12]
+    _tasks[task_id] = {"state": "running", "total": 0, "done": 0, "current_role": None, "error": None, "cancel": False, "_ts": now}
+    return task_id
+
+
+def get_task(task_id: str) -> dict | None:
+    return _tasks.get(task_id)
+
+
+def generation_running() -> bool:
+    return any(t["state"] == "running" for t in _tasks.values())
+
+
+def _story_path(name: str) -> str:
+    path = os.path.join(settings.story_dir, name)
+    if not os.path.isdir(path):
+        # URL-speak archives live under speak_text_dir but reuse the story layout.
+        alt = os.path.join(settings.speak_text_dir, name)
+        if os.path.isdir(alt):
+            return alt
+    return path
+
+
+def save_speak_archive(speak_id: str, text: str, voice: str) -> str:
+    """Create the archive dir for a URL speak: save the curated text, return the dir path.
+
+    Metadata is written immediately so the archive shows in the Stories tab
+    even if synthesis is stopped or interrupted; _run_archived fills in the
+    real segment_count once synthesis completes.
+    """
+    path = os.path.join(settings.speak_text_dir, speak_id)
+    os.makedirs(os.path.join(path, "segments"), exist_ok=True)
+    with open(os.path.join(path, "source.txt"), "w", encoding="utf-8") as f:
+        f.write(text)
+    _write_speak_metadata(path, speak_id, text, voice)
+    return path
+
+
+def _segments_path(name: str) -> str:
+    return os.path.join(_story_path(name), "segments")
+
+
+def _write_metadata(name: str, source: str, plan: StoryPlan, segments: list) -> None:
+    metadata = {
+        "story_name": name,
+        "source": source,
+        "created": time.time(),
+        "roles": [r.model_dump() for r in plan.roles],
+        "segments": [s.model_dump() for s in segments],
+        "model": settings.groq_model,
+        "llm_response": plan.llm_response,
+    }
+    with open(os.path.join(_story_path(name), "metadata.json"), "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+
+async def _synth_segment(text: str, voice: str, out_path: str) -> None:
+    comm = edge_tts.Communicate(text, voice)
+    await comm.save(out_path)
+
+
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+CHUNK_MAX_SENTENCES = 3
+
+
+def _chunk_sentences(text: str, max_sentences: int = CHUNK_MAX_SENTENCES) -> list[str]:
+    """Split text into chunks of up to max_sentences sentences."""
+    sentences = [s.strip() for s in SENTENCE_SPLIT_RE.split(text.strip()) if s.strip()]
+    return [" ".join(sentences[i:i + max_sentences]) for i in range(0, len(sentences), max_sentences)]
+
+
+async def _play_file(path: str, task: dict) -> None:
+    await _ensure_speaker_connected()
+    proc = await asyncio.create_subprocess_exec(
+        "ffplay", "-nodisp", "-autoexit", "-loglevel", "error", path,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    set_play_proc(proc)
+    if task.get("cancel"):
+        stop_playback()
+        return
+    await proc.wait()
+    clear_play_proc(proc)
+
+
+async def generate_story(
+    url: str | None, text: str | None, story_name: str, plan: StoryPlan, task_id: str,
+    pipeline=None,
+) -> None:
+    task = _tasks[task_id]
+    cancelled = False
+    name: str | None = None
+    segments: list = []
+    source = url or "text"
+    try:
+        # Already-processed URL: replay combined.mp3 or resume the partial
+        # segments instead of re-synthesizing from scratch.
+        if url:
+            url_name = speak_name_from_url(url)
+            if url_name:
+                url_archive = os.path.join(settings.speak_text_dir, url_name)
+                combined_path = os.path.join(url_archive, "combined.mp3")
+                if os.path.isfile(combined_path):
+                    if pipeline is not None and pipeline.begin():
+                        pipeline.start_combined(combined_path, url_name)
+                    task["total"] = 1
+                    task["done"] = 1
+                    task["state"] = "done"
+                    log.info("URL %s already processed; replaying combined.mp3", url_name)
+                    return
+                seg_dir = os.path.join(url_archive, "segments")
+                existing = (
+                    sorted(f for f in os.listdir(seg_dir) if is_segment_file(f))
+                    if os.path.isdir(seg_dir)
+                    else []
+                )
+                if existing:
+                    src_text = ""
+                    src_path = os.path.join(url_archive, "source.txt")
+                    if os.path.isfile(src_path):
+                        with open(src_path, encoding="utf-8") as f:
+                            src_text = f.read()
+                    voice = stored_voice(url_name) or DEFAULT_VOICE
+                    if pipeline is not None and pipeline.begin():
+                        pipeline.start(src_text, voice, url_name, url_archive)
+                    task["total"] = 1
+                    task["done"] = 1
+                    task["state"] = "done"
+                    log.info("URL %s already processed; resuming from segment %d", url_name, len(existing) + 1)
+                    return
+        name = _safe_name(story_name)
+        if text is None:
+            # Raw text (uncurated) so the LLM's word offsets match what it analyzed.
+            text, _ = text_source.fetch_text(url, curate=False)
+        os.makedirs(_story_path(name), exist_ok=True)
+        with open(os.path.join(_story_path(name), "source.txt"), "w", encoding="utf-8") as f:
+            f.write(text)
+        word_count = len(text.split())
+        segments = [s for s in plan.segments if s.end_word <= word_count]
+        if not segments:
+            task["state"] = "failed"
+            task["error"] = "no segments in plan"
+            log.warning("Story %s generation failed: no segments in plan", name)
+            return
+        task["total"] = len(segments)
+        seg_dir = _segments_path(name)
+        os.makedirs(seg_dir, exist_ok=True)
+        # Clean up any previous partial/cached artifacts before generating
+        for f in os.listdir(seg_dir):
+            try:
+                os.remove(os.path.join(seg_dir, f))
+            except OSError:
+                pass
+        combined_path = os.path.join(_story_path(name), "combined.mp3")
+        try:
+            os.remove(combined_path)
+        except OSError:
+            pass
+        voice_by_role = {r.role: r.voice for r in plan.roles}
+        # Build synthesis units: each segment split into 2-3 sentence chunks.
+        chunks: list[tuple[int, str, str, str]] = []
+        for i, seg in enumerate(segments, start=1):
+            seg_text = slice_text(text, seg.start_word, seg.end_word)
+            # Apply the curation filters to the slice so boilerplate (license
+            # header/footer, CONTENTS, front matter) is ignored in the audio.
+            seg_text = text_source.curate_text(seg_text)
+            if not seg_text.strip():
+                continue
+            role_slug = "".join(c for c in seg.role if c.isalnum() or c in "-_") or "role"
+            for ci, chunk_text in enumerate(_chunk_sentences(seg_text), start=1):
+                out_path = os.path.join(seg_dir, f"{i:03d}_{role_slug}_{ci:02d}.mp3")
+                chunks.append((i, seg.role, chunk_text, out_path))
+        pending: asyncio.Task | None = None
+        for idx, (seg_idx, role, chunk_text, out_path) in enumerate(chunks, start=1):
+            if task.get("cancel"):
+                cancelled = True
+                break
+            task["current_role"] = role
+            if pending is not None:
+                # This chunk's synthesis was prefetched while the previous one played.
+                await pending
+                pending = None
+            else:
+                # First chunk: nothing prefetched yet, synthesize inline.
+                await _synth_segment(chunk_text, voice_by_role.get(role, DEFAULT_VOICE), out_path)
+            # Prefetch the next chunk's synthesis while this one plays.
+            if idx < len(chunks):
+                nxt_seg, nxt_role, nxt_text, nxt_path = chunks[idx]
+                pending = asyncio.create_task(
+                    _synth_segment(nxt_text, voice_by_role.get(nxt_role, DEFAULT_VOICE), nxt_path)
+                )
+            log.info("Chunk %d/%d (segment %d, %s), playing", idx, len(chunks), seg_idx, role)
+            await _play_file(out_path, task)
+            if task.get("cancel"):
+                cancelled = True
+                if pending is not None:
+                    pending.cancel()
+                    try:
+                        await pending
+                    except asyncio.CancelledError:
+                        pass
+                break
+            # Mark segment progress when its last chunk finishes playing.
+            if idx == len(chunks) or chunks[idx][0] != seg_idx:
+                task["done"] = seg_idx
+        if not cancelled:
+            task["done"] = len(segments)
+        _write_metadata(name, source, plan, segments)
+        if cancelled:
+            task["state"] = "cancelled"
+            task["error"] = "cancelled by user"
+            log.info("Story %s generation cancelled (%d/%d segments)", name, task["done"], len(segments))
+        else:
+            task["state"] = "done"
+            log.info("Story %s generated (%d segments)", name, len(segments))
+    except Exception as exc:
+        task["state"] = "failed"
+        task["error"] = str(exc)
+        log.exception("Story generation failed for %s", story_name)
+        if name and segments:
+            _write_metadata(name, source, plan, segments)
+
+
+def _record_segment_count(name: str, count: int) -> None:
+    """Persist the clip count in metadata.json so list_stories survives segment cleanup."""
+    meta_path = os.path.join(_story_path(name), "metadata.json")
+    if not os.path.isfile(meta_path):
+        return
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        meta["segment_count"] = count
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+def combine_story(name: str) -> str:
+    """Concatenate segment MP3s into combined.mp3 (cached)."""
+    name = _safe_name(name)
+    combined = os.path.join(_story_path(name), "combined.mp3")
+    if os.path.exists(combined):
+        return combined
+    with _combine_lock:
+        if os.path.exists(combined):
+            return combined
+        seg_dir = _segments_path(name)
+        files = sorted(f for f in os.listdir(seg_dir) if is_segment_file(f))
+        if not files:
+            raise FileNotFoundError(f"No segments for story {name}")
+        list_path = os.path.join(_story_path(name), "concat.txt")
+        try:
+            with open(list_path, "w", encoding="utf-8") as f:
+                for fn in files:
+                    f.write(f"file '{os.path.join(seg_dir, fn)}'\n")
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", combined],
+                capture_output=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            try:
+                os.remove(combined)
+            except OSError:
+                pass
+            raise
+        finally:
+            try:
+                os.remove(list_path)
+            except OSError:
+                pass
+        # Record the clip count, then clean up the individual segments.
+        _record_segment_count(name, len(files))
+        for fn in files:
+            try:
+                os.remove(os.path.join(seg_dir, fn))
+            except OSError:
+                pass
+        return combined
+
+
+def list_stories() -> list[StoryInfo]:
+    stories = []
+    # Regular generated stories live in story_dir; URL-speak archives in speak_text_dir.
+    for base in (settings.story_dir, settings.speak_text_dir):
+        if not os.path.isdir(base):
+            continue
+        for name in sorted(os.listdir(base)):
+            meta_path = os.path.join(base, name, "metadata.json")
+            if not os.path.isfile(meta_path):
+                continue
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                seg_dir = _segments_path(name)
+                dir_count = len([x for x in os.listdir(seg_dir) if is_segment_file(x)]) if os.path.isdir(seg_dir) else 0
+                seg_count = meta.get("segment_count", dir_count)
+                stories.append(StoryInfo(
+                    name=name,
+                    roles=[r["role"] for r in meta.get("roles", [])],
+                    segment_count=seg_count,
+                    created=meta.get("created", 0.0),
+                ))
+            except (OSError, json.JSONDecodeError, KeyError):
+                continue
+    return stories
+
+
+def delete_story(name: str) -> None:
+    name = _safe_name(name)
+    path = _story_path(name)
+    if os.path.isdir(path):
+        shutil.rmtree(path)

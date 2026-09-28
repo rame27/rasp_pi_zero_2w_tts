@@ -1,0 +1,1494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#1a1a1a">
+    <title>Edge-TTS Web UI</title>
+    <style>
+        :root {
+            --bg-primary: #0f0f0f;
+            --bg-secondary: #1a1a1a;
+            --bg-card: #242424;
+            --accent: #4a9eff;
+            --accent-hover: #5fa3ff;
+            --text-primary: #ffffff;
+            --text-secondary: #b3b3b3;
+            --border: #333333;
+            --success: #4caf50;
+            --danger: #f44336;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+        }
+        .container {
+            max-width: 100%;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            min-height: 100vh;
+        }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            padding: 8px 0;
+        }
+        .header-title {
+            text-align: center;
+        }
+        .header-actions {
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            gap: 8px;
+        }
+        .icon-btn {
+            width: 36px;
+            height: 36px;
+            min-width: 0;
+            padding: 0;
+            border-radius: 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+        }
+        .icon-btn:hover, .icon-btn:active {
+            color: var(--text-primary);
+            border-color: var(--accent);
+        }
+        .icon-btn.danger:hover, .icon-btn.danger:active {
+            color: var(--danger);
+            border-color: var(--danger);
+        }
+        .icon-btn svg {
+            width: 18px;
+            height: 18px;
+        }
+        .header-status {
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            gap: 8px;
+        }
+        .icon-btn.connected {
+            color: var(--success);
+            border-color: var(--success);
+        }
+        .icon-btn.connected:hover, .icon-btn.connected:active {
+            color: var(--success);
+            border-color: var(--success);
+        }
+        .icon-btn.disconnected {
+            color: var(--danger);
+            border-color: var(--danger);
+        }
+        .icon-btn.disconnected:hover, .icon-btn.disconnected:active {
+            color: var(--danger);
+            border-color: var(--danger);
+        }
+        .icon-btn.checking {
+            color: var(--text-secondary);
+            border-color: var(--border);
+        }
+        h1 {
+            font-size: clamp(20px, 5vw, 28px);
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: clamp(12px, 3vw, 14px);
+        }
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        label {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        .tabs {
+            display: flex;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 4px;
+            gap: 4px;
+        }
+        .tab {
+            flex: 1;
+            padding: 8px 12px;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .tab.active {
+            background: var(--accent);
+            color: white;
+        }
+        textarea, input[type="url"], select {
+            width: 100%;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            padding: 12px;
+            font-size: 16px;
+            font-family: inherit;
+            resize: vertical;
+        }
+        textarea {
+            min-height: 120px;
+            max-height: 200px;
+        }
+        select {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23b3b3b3' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
+        }
+        .voice-search {
+            margin-bottom: 8px;
+        }
+        .voice-info {
+            font-size: 12px;
+            color: var(--text-secondary);
+            padding: 8px;
+            background: var(--bg-secondary);
+            border-radius: 6px;
+        }
+        .button-group {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        button {
+            flex: 1;
+            min-width: 120px;
+            padding: 14px 20px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+        }
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+        .btn-primary:hover, .btn-primary:active {
+            background: var(--accent-hover);
+        }
+        .btn-primary:disabled {
+            background: #555;
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+        .btn-secondary {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+        .status {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 12px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .status-value {
+            color: var(--accent);
+            font-weight: 600;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: var(--accent);
+            transition: width 0.3s ease;
+        }
+        .audio-player {
+            display: none;
+            width: 100%;
+        }
+        .footer {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 12px;
+            margin-top: auto;
+            padding: 8px;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        .pulse {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            padding: 16px;
+        }
+        .modal {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 320px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .modal h2 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        .modal p {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+        }
+        .modal-actions button {
+            flex: 1;
+            min-width: 0;
+            padding: 12px;
+            font-size: 14px;
+        }
+        .modal-wide {
+            max-width: 420px;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-header h2 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        .bt-tooltip {
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 0;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 100;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            display: none;
+            pointer-events: none;
+        }
+        .bt-tooltip.visible {
+            display: block;
+        }
+        .bt-tooltip .tt-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .bt-tooltip .tt-mac {
+            color: var(--text-secondary);
+            font-size: 11px;
+        }
+        .bt-tooltip .tt-status {
+            color: var(--success);
+            font-size: 11px;
+            margin-top: 2px;
+        }
+        .bt-tooltip .tt-status.off {
+            color: var(--danger);
+        }
+        .bt-current {
+            padding: 10px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .bt-section {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .bt-section h3 {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .bt-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 220px;
+            overflow-y: auto;
+        }
+        .bt-empty {
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding: 8px;
+            text-align: center;
+        }
+        .bt-device {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 10px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .bt-device-info {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+        .bt-device-name {
+            font-size: 14px;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .bt-device-mac {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .bt-badge {
+            flex: 0 0 auto;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+        .bt-badge.connected {
+            background: rgba(76, 175, 80, 0.2);
+            color: var(--success);
+        }
+        .bt-badge.paired {
+            background: rgba(74, 158, 255, 0.2);
+            color: var(--accent);
+        }
+        .bt-badge.discovered {
+            background: rgba(179, 179, 179, 0.2);
+            color: var(--text-secondary);
+        }
+        .bt-connect-btn {
+            flex: 0 0 auto;
+            min-width: 0;
+            padding: 8px 14px;
+            font-size: 13px;
+        }
+        .speaker-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .speaker-label {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            min-width: 60px;
+        }
+        .speaker-value {
+            font-size: 14px;
+            color: var(--text-primary);
+            min-width: 70px;
+            text-align: right;
+        }
+        .battery-low {
+            color: var(--danger);
+            font-weight: 600;
+            animation: battery-pulse 1.5s ease-in-out infinite;
+        }
+        @keyframes battery-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.45; }
+        }
+        input[type="range"] {
+            flex: 1;
+            accent-color: var(--accent);
+            height: 32px;
+        }
+        .bt-scan-status {
+            font-size: 13px;
+            color: var(--accent);
+            text-align: center;
+            padding: 4px;
+        }
+        .story-preview {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+        }
+        .story-preview h3 {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+        .story-role {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            padding: 4px 0;
+            border-bottom: 1px dashed var(--border);
+        }
+        .story-role:last-child { border-bottom: none; }
+        .progress-wrap {
+            height: 8px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            background: var(--accent);
+            transition: width 0.3s;
+        }
+        .story-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+        }
+        .story-item-info { display: flex; flex-direction: column; min-width: 0; }
+        .story-item-name { font-size: 14px; font-weight: 500; }
+        .story-item-meta { font-size: 11px; color: var(--text-secondary); }
+        .story-item-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-status">
+                <button id="bt-status-btn" class="icon-btn checking" aria-label="Bluetooth speaker status">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M11 5 6 9H2v6h4l5 4V5z"/>
+                        <path d="M15.5 8.5a5 5 0 0 1 0 7"/>
+                        <path d="M19 5a9 9 0 0 1 0 14"/>
+                    </svg>
+                </button>
+                <div id="bt-tooltip" class="bt-tooltip" role="tooltip">
+                    <div class="tt-name">Checking...</div>
+                    <div class="tt-mac"></div>
+                    <div class="tt-status">Checking...</div>
+                </div>
+            </div>
+            <div class="header-title">
+                <h1>Edge-TTS Web UI</h1>
+                <p class="subtitle">Text-to-Speech with Microsoft Edge Voices</p>
+            </div>
+            <div class="header-actions">
+                <button id="bt-settings-btn" class="icon-btn" title="Bluetooth Settings" aria-label="Bluetooth Settings">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                </button>
+                <button id="restart-btn" class="icon-btn" title="Restart" aria-label="Restart">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+                        <path d="M21 3v6h-6"/>
+                    </svg>
+                </button>
+                <button id="poweroff-btn" class="icon-btn danger" title="Power Off" aria-label="Power Off">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2v10"/>
+                        <path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <div class="card">
+            <div class="input-group">
+                <label>Input Type</label>
+                <div class="tabs">
+                    <button class="tab active" data-tab="url">URL</button>
+                    <button id="stories-tab" class="tab">Stories</button>
+                </div>
+            </div>
+
+            <div id="url-input" class="input-group">
+                <div style="display: flex; gap: 16px; margin-bottom: 8px;">
+                    <label style="display: flex; align-items: center; gap: 6px; font-size: 14px;">
+                        <input type="radio" name="input-mode" value="url" checked> URL
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 6px; font-size: 14px;">
+                        <input type="radio" name="input-mode" value="text"> Text
+                    </label>
+                </div>
+                <div id="url-field">
+                    <label for="url">URL to Extract Text From</label>
+                    <input type="url" id="url" placeholder="https://example.com/article">
+                </div>
+                <div id="text-field" style="display: none;">
+                    <label for="text">Text to Speak</label>
+                    <textarea id="text" placeholder="Enter text here..."></textarea>
+                    <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary);">
+                        <span id="char-count">0 characters</span>
+                        <span>Max 50,000</span>
+                    </div>
+                </div>
+                <button id="story-analyze-btn" class="btn-secondary" style="margin-top: 8px;">Analyze Story</button>
+            </div>
+
+            <div id="stories-panel" style="display: none;">
+                <div class="card">
+                    <h2>Saved Stories</h2>
+                    <div id="stories-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+                </div>
+            </div>
+
+            <div id="story-preview" class="story-preview" style="display: none;">
+                <h3>Story Plan</h3>
+                <div class="input-group">
+                    <label for="story-name-input">Story Name</label>
+                    <input type="text" id="story-name-input" />
+                </div>
+                <div id="story-roles"></div>
+                <div id="story-seg-count" style="font-size: 13px; color: var(--text-secondary);"></div>
+                <div class="progress-wrap"><div id="story-progress" class="progress-bar"></div></div>
+                <div id="story-progress-text" style="font-size: 12px; color: var(--text-secondary);"></div>
+                <button id="story-generate-btn" class="btn-primary">Generate</button>
+            </div>
+
+            <div class="input-group" id="voice-section">
+                <label for="voice-search">Search Voices</label>
+                <input type="text" id="voice-search" class="voice-search" placeholder="Search by name, locale, or language...">
+                <label for="voice">Voice</label>
+                <select id="voice"></select>
+                <div id="voice-info" class="voice-info"></div>
+            </div>
+        </div>
+
+        <div class="card" id="speaker-card">
+            <div class="input-group">
+                <label>Speaker</label>
+                <div id="speaker-info" class="bt-current">No speaker configured</div>
+                <div class="speaker-row">
+                    <span class="speaker-label">Volume</span>
+                    <input type="range" id="speaker-volume" min="0" max="100" value="100" disabled>
+                    <span id="speaker-volume-pct" class="speaker-value">--</span>
+                </div>
+                <div class="speaker-row">
+                    <button id="speaker-mute-btn" class="btn-secondary" disabled>Mute</button>
+                    <span id="speaker-battery" class="speaker-value">Battery: --</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="button-group">
+                <button id="speak-btn" class="btn-primary">Speak</button>
+                <button id="stop-btn" class="btn-danger" disabled>Stop</button>
+                <button id="clear-btn" class="btn-secondary">Clear</button>
+            </div>
+
+            <div id="status" class="status" style="display: none;">
+                <div class="status-row">
+                    <span>Status</span>
+                    <span id="status-value" class="status-value">Idle</span>
+                </div>
+                <div class="status-row">
+                    <span>Progress</span>
+                    <span id="progress-text">0 / 0</span>
+                </div>
+                <div class="progress-bar">
+                    <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <audio id="audio-player" class="audio-player" controls></audio>
+        </div>
+
+        <div class="footer">
+            Edge-TTS Web UI • Optimized for Mobile
+        </div>
+    </div>
+
+    <div id="confirm-modal" class="modal-overlay" style="display: none;">
+        <div class="modal">
+            <h2 id="confirm-title">Confirm</h2>
+            <p id="confirm-message">Are you sure?</p>
+            <div class="modal-actions">
+                <button id="confirm-cancel" class="btn-secondary">Cancel</button>
+                <button id="confirm-ok" class="btn-danger">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="bt-modal" class="modal-overlay" style="display: none;">
+        <div class="modal modal-wide">
+            <div class="modal-header">
+                <h2>Bluetooth Settings</h2>
+            </div>
+            <div id="bt-current" class="bt-current">Checking...</div>
+            <div id="bt-system-default" class="bt-current" style="font-size: 12px;">Checking...</div>
+            <div class="bt-section">
+                <h3>Previously Connected</h3>
+                <div id="bt-history" class="bt-list"></div>
+            </div>
+            <div class="bt-section">
+                <h3>Scan for Devices</h3>
+                <button id="bt-scan-btn" class="btn-secondary">Scan for Devices</button>
+                <div id="bt-scan-status" class="bt-scan-status" style="display: none;">Scanning... (about 12s)</div>
+                <div id="bt-scan-results" class="bt-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const urlTab = document.querySelector('.tab[data-tab="url"]');
+        const urlInput = document.getElementById('url-input');
+        const urlField = document.getElementById('url-field');
+        const textField = document.getElementById('text-field');
+        const inputModeRadios = document.querySelectorAll('input[name="input-mode"]');
+        const textArea = document.getElementById('text');
+        const urlInputEl = document.getElementById('url');
+        const charCount = document.getElementById('char-count');
+        const voiceSearch = document.getElementById('voice-search');
+        const voiceSelect = document.getElementById('voice');
+        const voiceInfo = document.getElementById('voice-info');
+        const speakBtn = document.getElementById('speak-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        const statusDiv = document.getElementById('status');
+        const statusValue = document.getElementById('status-value');
+        const progressText = document.getElementById('progress-text');
+        const progressFill = document.getElementById('progress-fill');
+        const audioPlayer = document.getElementById('audio-player');
+        const restartBtn = document.getElementById('restart-btn');
+        const poweroffBtn = document.getElementById('poweroff-btn');
+        const confirmModal = document.getElementById('confirm-modal');
+        const confirmTitle = document.getElementById('confirm-title');
+        const confirmMessage = document.getElementById('confirm-message');
+        const confirmOk = document.getElementById('confirm-ok');
+        const confirmCancel = document.getElementById('confirm-cancel');
+        const btStatusBtn = document.getElementById('bt-status-btn');
+        const btSettingsBtn = document.getElementById('bt-settings-btn');
+        const btModal = document.getElementById('bt-modal');
+        const btCurrent = document.getElementById('bt-current');
+        const btSystemDefault = document.getElementById('bt-system-default');
+        const btHistory = document.getElementById('bt-history');
+        const btScanBtn = document.getElementById('bt-scan-btn');
+        const btScanStatus = document.getElementById('bt-scan-status');
+        const btScanResults = document.getElementById('bt-scan-results');
+
+        let allVoices = [];
+        let currentSpeakId = null;
+        let statusInterval = null;
+        let pendingAction = null;
+        let currentDefaultMac = null;
+
+        function getInputMode() {
+            const checked = document.querySelector('input[name="input-mode"]:checked');
+            return checked ? checked.value : 'url';
+        }
+
+        function showConfirm(action) {
+            pendingAction = action;
+            if (action === 'poweroff') {
+                confirmTitle.textContent = 'Power Off';
+                confirmMessage.textContent = 'Are you sure you want to power off the device?';
+                confirmOk.textContent = 'Power Off';
+            } else {
+                confirmTitle.textContent = 'Restart';
+                confirmMessage.textContent = 'Are you sure you want to restart the device?';
+                confirmOk.textContent = 'Restart';
+            }
+            confirmModal.style.display = 'flex';
+        }
+
+        function hideConfirm() {
+            confirmModal.style.display = 'none';
+            pendingAction = null;
+        }
+
+        confirmCancel.addEventListener('click', hideConfirm);
+        confirmModal.addEventListener('click', (e) => {
+            if (e.target === confirmModal) hideConfirm();
+        });
+
+        confirmOk.addEventListener('click', async () => {
+            if (!pendingAction) return;
+            const action = pendingAction;
+            hideConfirm();
+            try {
+                const res = await fetch(`/api/${action}`, { method: 'POST' });
+                if (!res.ok) {
+                    const err = await res.json();
+                    alert(err.detail || `Failed to ${action}`);
+                }
+            } catch (err) {
+                alert(`Failed to ${action}: ${err.message}`);
+            }
+        });
+
+        restartBtn.addEventListener('click', () => showConfirm('restart'));
+        poweroffBtn.addEventListener('click', () => showConfirm('poweroff'));
+
+        function updateSpeakerIcon(data) {
+            btStatusBtn.classList.remove('checking', 'connected', 'disconnected');
+            const tooltip = document.getElementById('bt-tooltip');
+            const ttName = tooltip.querySelector('.tt-name');
+            const ttMac = tooltip.querySelector('.tt-mac');
+            const ttStatus = tooltip.querySelector('.tt-status');
+            // Tooltip shows the current speaker used (system default), not just the connected device.
+            const speaker = data.system_default || data.device;
+            if (speaker) {
+                btStatusBtn.classList.add(data.connected ? 'connected' : 'disconnected');
+                ttName.textContent = speaker.name;
+                ttMac.textContent = speaker.mac;
+                ttStatus.textContent = data.connected ? 'Connected' : 'Not connected';
+                ttStatus.classList.toggle('off', !data.connected);
+            } else {
+                btStatusBtn.classList.add('disconnected');
+                ttName.textContent = 'No speaker configured';
+                ttMac.textContent = '';
+                ttStatus.textContent = 'Disconnected';
+                ttStatus.classList.add('off');
+            }
+        }
+
+        function showBtTooltip() {
+            document.getElementById('bt-tooltip').classList.add('visible');
+        }
+
+        function hideBtTooltip() {
+            document.getElementById('bt-tooltip').classList.remove('visible');
+        }
+
+        async function fetchBtStatus() {
+            try {
+                const res = await fetch('/api/bt/status');
+                const data = await res.json();
+                updateSpeakerIcon(data);
+                if (btModal.style.display === 'flex') {
+                    renderBtStatus(data);
+                }
+            } catch (err) {
+                console.error('BT status failed:', err);
+            }
+        }
+
+        function renderBtStatus(data) {
+            currentDefaultMac = data.system_default ? data.system_default.mac.toUpperCase() : null;
+            if (data.connected && data.device) {
+                btCurrent.textContent = `Connected: ${data.device.name} (${data.device.mac})`;
+                btCurrent.style.color = 'var(--success)';
+            } else {
+                btCurrent.textContent = 'Not connected';
+                btCurrent.style.color = 'var(--danger)';
+            }
+            if (data.system_default) {
+                btSystemDefault.textContent = `System default: ${data.system_default.name} (${data.system_default.mac})`;
+                btSystemDefault.style.color = 'var(--accent)';
+            } else {
+                btSystemDefault.textContent = 'System default: none';
+                btSystemDefault.style.color = 'var(--text-secondary)';
+            }
+            btHistory.innerHTML = '';
+            if (!data.history.length) {
+                btHistory.innerHTML = '<div class="bt-empty">No previously connected devices</div>';
+            } else {
+                data.history.forEach(d => {
+                    btHistory.appendChild(deviceRow(d, true));
+                });
+            }
+        }
+
+        function deviceRow(device, isHistory) {
+            const row = document.createElement('div');
+            row.className = 'bt-device';
+
+            const info = document.createElement('div');
+            info.className = 'bt-device-info';
+            const name = document.createElement('span');
+            name.className = 'bt-device-name';
+            name.textContent = device.name || device.mac;
+            const mac = document.createElement('span');
+            mac.className = 'bt-device-mac';
+            mac.textContent = device.mac;
+            info.appendChild(name);
+            info.appendChild(mac);
+            row.appendChild(info);
+
+            const badge = document.createElement('span');
+            badge.className = 'bt-badge ' + (device.connected ? 'connected' : device.paired ? 'paired' : 'discovered');
+            badge.textContent = device.connected ? 'Connected' : device.paired ? 'Paired' : 'Discovered';
+            row.appendChild(badge);
+
+            if (device.mac.toUpperCase() === currentDefaultMac) {
+                const def = document.createElement('span');
+                def.className = 'bt-badge';
+                def.style.background = 'rgba(255, 193, 7, 0.2)';
+                def.style.color = '#ffc107';
+                def.textContent = 'System Default';
+                row.appendChild(def);
+            }
+
+            if (!device.connected) {
+                const btn = document.createElement('button');
+                btn.className = 'btn-secondary bt-connect-btn';
+                btn.textContent = 'Connect';
+                btn.addEventListener('click', () => connectDevice(device.mac));
+                row.appendChild(btn);
+            }
+            return row;
+        }
+
+        async function connectDevice(mac) {
+            try {
+                const res = await fetch('/api/bt/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mac })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    alert(data.detail || 'Connect failed');
+                    return;
+                }
+                if (data.connected) {
+                    alert(`Connected to ${data.device.name} — now the system speaker`);
+                } else {
+                    alert('Connection failed. Make sure the device is powered on and in pairing mode.');
+                }
+                fetchBtStatus();
+            } catch (err) {
+                alert(`Connect failed: ${err.message}`);
+            }
+        }
+
+        function openBtModal() {
+            btModal.style.display = 'flex';
+            fetchBtStatus();
+        }
+
+        function closeBtModal() {
+            btModal.style.display = 'none';
+        }
+
+        btSettingsBtn.addEventListener('click', openBtModal);
+        btStatusBtn.addEventListener('click', openBtModal);
+        btStatusBtn.addEventListener('mouseenter', showBtTooltip);
+        btStatusBtn.addEventListener('mouseleave', hideBtTooltip);
+        btStatusBtn.addEventListener('focus', showBtTooltip);
+        btStatusBtn.addEventListener('blur', hideBtTooltip);
+        btModal.addEventListener('click', (e) => {
+            if (e.target === btModal) closeBtModal();
+        });
+
+        btScanBtn.addEventListener('click', async () => {
+            btScanBtn.disabled = true;
+            btScanStatus.style.display = 'block';
+            btScanResults.innerHTML = '';
+            try {
+                const res = await fetch('/api/bt/scan', { method: 'POST' });
+                const data = await res.json();
+                btScanResults.innerHTML = '';
+                if (!data.devices.length) {
+                    btScanResults.innerHTML = '<div class="bt-empty">No devices found</div>';
+                } else {
+                    data.devices.forEach(d => {
+                        btScanResults.appendChild(deviceRow(d, false));
+                    });
+                }
+            } catch (err) {
+                btScanResults.innerHTML = `<div class="bt-empty">Scan failed: ${err.message}</div>`;
+            } finally {
+                btScanBtn.disabled = false;
+                btScanStatus.style.display = 'none';
+            }
+        });
+
+        fetchBtStatus();
+        setInterval(fetchBtStatus, 5000);
+
+        const speakerInfo = document.getElementById('speaker-info');
+        const speakerVolume = document.getElementById('speaker-volume');
+        const speakerVolumePct = document.getElementById('speaker-volume-pct');
+        const speakerMuteBtn = document.getElementById('speaker-mute-btn');
+        const speakerBattery = document.getElementById('speaker-battery');
+        let volumeDebounce = null;
+        let speakerDragging = false;
+
+        async function fetchSpeakerState() {
+            try {
+                const res = await fetch('/api/speaker');
+                if (res.status === 404) {
+                    speakerInfo.textContent = 'No speaker configured';
+                    speakerInfo.style.color = 'var(--text-secondary)';
+                    speakerVolume.disabled = true;
+                    speakerVolumePct.textContent = '--';
+                    speakerMuteBtn.disabled = true;
+                    speakerMuteBtn.textContent = 'Mute';
+                    speakerBattery.textContent = 'Battery: --';
+                    speakerBattery.classList.remove('battery-low');
+                    return;
+                }
+                const data = await res.json();
+                speakerInfo.textContent = `${data.name} (${data.mac})`;
+                speakerInfo.style.color = 'var(--accent)';
+                if (data.volume !== null && data.volume !== undefined) {
+                    const pct = Math.round(data.volume * 100 / 127);
+                    speakerVolume.disabled = false;
+                    if (!speakerDragging) {
+                        speakerVolume.value = pct;
+                        speakerVolumePct.textContent = `${pct}%`;
+                    }
+                } else {
+                    speakerVolume.disabled = true;
+                    speakerVolumePct.textContent = '--';
+                }
+                speakerMuteBtn.disabled = false;
+                speakerMuteBtn.textContent = data.muted ? 'Unmute' : 'Mute';
+                speakerMuteBtn.classList.toggle('btn-danger', !!data.muted);
+                speakerBattery.textContent = (data.battery !== null && data.battery !== undefined)
+                    ? `Battery: ${data.battery}%`
+                    : 'Battery: N/A';
+                speakerBattery.classList.toggle(
+                    'battery-low',
+                    data.battery !== null && data.battery !== undefined && data.battery < 20
+                );
+            } catch (err) {
+                console.error('Speaker state failed:', err);
+            }
+        }
+
+        speakerVolume.addEventListener('pointerdown', () => { speakerDragging = true; });
+        speakerVolume.addEventListener('pointerup', () => { speakerDragging = false; });
+        speakerVolume.addEventListener('pointercancel', () => { speakerDragging = false; });
+
+        speakerVolume.addEventListener('input', () => {
+            const pct = parseInt(speakerVolume.value, 10);
+            speakerVolumePct.textContent = `${pct}%`;
+            if (volumeDebounce) clearTimeout(volumeDebounce);
+            volumeDebounce = setTimeout(async () => {
+                const vol = Math.round(pct * 127 / 100);
+                try {
+                    await fetch('/api/speaker/volume', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ volume: vol })
+                    });
+                } catch (err) {
+                    console.error('Volume set failed:', err);
+                }
+            }, 300);
+        });
+
+        speakerMuteBtn.addEventListener('click', async () => {
+            const muted = speakerMuteBtn.textContent === 'Mute';
+            try {
+                const res = await fetch('/api/speaker/mute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ muted })
+                });
+                if (res.ok) {
+                    speakerMuteBtn.textContent = muted ? 'Unmute' : 'Mute';
+                    speakerMuteBtn.classList.toggle('btn-danger', muted);
+                }
+            } catch (err) {
+                console.error('Mute failed:', err);
+            }
+        });
+
+        fetchSpeakerState();
+        setInterval(fetchSpeakerState, 2000);
+
+        urlTab.addEventListener('click', () => {
+            urlTab.classList.add('active');
+            storiesTab.classList.remove('active');
+            urlInput.style.display = 'flex';
+            storiesPanel.style.display = 'none';
+            voiceSection.style.display = 'flex';
+        });
+
+        inputModeRadios.forEach(r => r.addEventListener('change', () => {
+            const mode = getInputMode();
+            urlField.style.display = mode === 'url' ? 'flex' : 'none';
+            textField.style.display = mode === 'text' ? 'flex' : 'none';
+            currentPlan = null;
+            storyPreview.style.display = 'none';
+        }));
+
+        textArea.addEventListener('input', () => {
+            charCount.textContent = `${textArea.value.length.toLocaleString()} characters`;
+        });
+
+        clearBtn.addEventListener('click', () => {
+            textArea.value = '';
+            urlInputEl.value = '';
+            charCount.textContent = '0 characters';
+            audioPlayer.style.display = 'none';
+            audioPlayer.src = '';
+        });
+
+        async function loadVoices() {
+            try {
+                const res = await fetch('/api/voices');
+                const data = await res.json();
+                allVoices = data.voices;
+                populateVoices(allVoices);
+            } catch (err) {
+                console.error('Failed to load voices:', err);
+            }
+        }
+
+        function populateVoices(voices) {
+            voiceSelect.innerHTML = '';
+            voices.forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = v.ShortName;
+                opt.textContent = `${v.Locale} - ${v.FriendlyName} (${v.Gender})`;
+                opt.dataset.voice = JSON.stringify(v);
+                voiceSelect.appendChild(opt);
+            });
+            updateVoiceInfo();
+        }
+
+        function updateVoiceInfo() {
+            const selected = voiceSelect.selectedOptions[0];
+            if (selected && selected.dataset.voice) {
+                const v = JSON.parse(selected.dataset.voice);
+                voiceInfo.textContent = `${v.ShortName} • ${v.Locale} • ${v.Gender} • ${v.VoiceType || 'Neural'}`;
+            }
+        }
+
+        voiceSelect.addEventListener('change', updateVoiceInfo);
+
+        voiceSearch.addEventListener('input', (e) => {
+            const term = e.target.value.toLowerCase();
+            if (!term) {
+                populateVoices(allVoices);
+                return;
+            }
+            const filtered = allVoices.filter(v => 
+                v.ShortName.toLowerCase().includes(term) ||
+                v.FriendlyName.toLowerCase().includes(term) ||
+                v.Locale.toLowerCase().includes(term) ||
+                v.Gender.toLowerCase().includes(term)
+            );
+            populateVoices(filtered);
+        });
+
+        speakBtn.addEventListener('click', async () => {
+            const voice = voiceSelect.value;
+            if (!voice) {
+                alert('Please select a voice');
+                return;
+            }
+
+            const mode = getInputMode();
+            let payload = { voice, input_type: mode };
+            if (mode === 'text') {
+                if (!textArea.value.trim()) { alert('Please enter text'); return; }
+                payload.text = textArea.value;
+            } else {
+                if (!urlInputEl.value.trim()) { alert('Please enter a URL'); return; }
+                payload.url = urlInputEl.value;
+            }
+
+            try {
+                speakBtn.disabled = true;
+                speakBtn.textContent = 'Synthesizing...';
+                speakBtn.classList.add('pulse');
+                stopBtn.disabled = false;
+                storyAnalyzeBtn.disabled = true;
+                storyGenerateBtn.disabled = true;
+                statusDiv.style.display = 'flex';
+                statusValue.textContent = 'Synthesizing...';
+                statusValue.style.color = 'var(--accent)';
+
+                const res = await fetch('/api/speak', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Failed to speak');
+                }
+
+                const data = await res.json();
+                currentSpeakId = data.speak_id;
+                startStatusPolling();
+            } catch (err) {
+                alert(err.message);
+                resetUI();
+            }
+        });
+
+        stopBtn.addEventListener('click', async () => {
+            try {
+                await fetch('/api/stop', { method: 'POST' });
+                if (generating) {
+                    // pollStoryTask will see 'cancelled' and re-enable buttons
+                    return;
+                }
+                stopStatusPolling();
+                resetUI();
+            } catch (err) {
+                console.error(err);
+            }
+        });
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                statusValue.textContent = data.state.charAt(0).toUpperCase() + data.state.slice(1);
+                if (data.state === 'playing') {
+                    statusValue.style.color = 'var(--success)';
+                    speakBtn.textContent = 'Playing...';
+                } else if (data.state === 'synthesizing') {
+                    statusValue.style.color = 'var(--accent)';
+                }
+                progressText.textContent = `${data.segments_done} / ${data.segments_total}`;
+                const pct = data.segments_total > 0 ? (data.segments_done / data.segments_total) * 100 : 0;
+                progressFill.style.width = `${pct}%`;
+
+                if (data.state === 'idle') {
+                    stopStatusPolling();
+                    // Try to load audio if we have speak_id
+                    if (currentSpeakId) {
+                        setTimeout(() => {
+                            audioPlayer.src = `/api/download/${currentSpeakId}.mp3`;
+                            audioPlayer.style.display = 'block';
+                            audioPlayer.load();
+                        }, 500);
+                    }
+                    resetUI();
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function startStatusPolling() {
+            if (statusInterval) clearInterval(statusInterval);
+            statusInterval = setInterval(fetchStatus, 500);
+        }
+
+        function stopStatusPolling() {
+            if (statusInterval) {
+                clearInterval(statusInterval);
+                statusInterval = null;
+            }
+        }
+
+        function resetUI() {
+            speakBtn.disabled = false;
+            speakBtn.textContent = 'Speak';
+            speakBtn.classList.remove('pulse');
+            stopBtn.disabled = true;
+            storyAnalyzeBtn.disabled = false;
+            storyGenerateBtn.disabled = false;
+            statusValue.textContent = 'Idle';
+            statusValue.style.color = 'var(--text-primary)';
+            progressText.textContent = '0 / 0';
+            progressFill.style.width = '0%';
+            currentSpeakId = null;
+        }
+
+        const storiesTab = document.getElementById('stories-tab');
+        const storiesPanel = document.getElementById('stories-panel');
+        const storiesList = document.getElementById('stories-list');
+        const voiceSection = document.getElementById('voice-section');
+        const storyPreview = document.getElementById('story-preview');
+        const storyNameInput = document.getElementById('story-name-input');
+        const storyRoles = document.getElementById('story-roles');
+        const storySegCount = document.getElementById('story-seg-count');
+        const storyProgress = document.getElementById('story-progress');
+        const storyProgressText = document.getElementById('story-progress-text');
+        const storyGenerateBtn = document.getElementById('story-generate-btn');
+        const storyAnalyzeBtn = document.getElementById('story-analyze-btn');
+        let currentPlan = null;
+        let generating = false;
+        let playingStory = null;
+        let playingBtn = null;
+
+        storiesTab.addEventListener('click', () => {
+            storiesTab.classList.add('active');
+            urlTab.classList.remove('active');
+            urlInput.style.display = 'none';
+            storiesPanel.style.display = 'flex';
+            voiceSection.style.display = 'none';
+            loadStories();
+        });
+
+        storyAnalyzeBtn.addEventListener('click', async () => {
+            const mode = getInputMode();
+            const url = urlInputEl.value.trim();
+            const text = textArea.value.trim();
+            if (mode === 'url' && !url) { alert('Enter a URL first'); return; }
+            if (mode === 'text' && !text) { alert('Enter text first'); return; }
+            storyAnalyzeBtn.disabled = true;
+            storyAnalyzeBtn.textContent = 'Analyzing...';
+            try {
+                const res = await fetch('/api/story/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(mode === 'url' ? { url } : { text })
+                });
+                const data = await res.json();
+                if (!res.ok) { alert(data.detail || 'Analysis failed'); return; }
+                currentPlan = data;
+                storyNameInput.value = data.story_name;
+                storyRoles.innerHTML = '';
+                data.roles.forEach(r => {
+                    const div = document.createElement('div');
+                    div.className = 'story-role';
+                    div.innerHTML = `<span>${r.role}</span><span>${r.voice}</span>`;
+                    storyRoles.appendChild(div);
+                });
+                storySegCount.textContent = `${data.segments.length} segments`;
+                storyProgress.style.width = '0%';
+                storyProgressText.textContent = '';
+                storyPreview.style.display = 'flex';
+            } catch (err) {
+                alert(`Analysis failed: ${err.message}`);
+            } finally {
+                storyAnalyzeBtn.disabled = false;
+                storyAnalyzeBtn.textContent = 'Analyze Story';
+            }
+        });
+
+        storyGenerateBtn.addEventListener('click', async () => {
+            if (!currentPlan) return;
+            const mode = getInputMode();
+            const url = urlInputEl.value.trim();
+            const text = textArea.value.trim();
+            const storyName = storyNameInput.value.trim() || currentPlan.story_name;
+            generating = true;
+            document.querySelectorAll('.story-item-actions .btn-primary').forEach(b => { b.disabled = true; });
+            storyGenerateBtn.disabled = true;
+            storyAnalyzeBtn.disabled = true;
+            speakBtn.disabled = true;
+            stopBtn.disabled = false;
+            try {
+                const res = await fetch('/api/story/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: mode === 'url' ? url : null,
+                        text: mode === 'text' ? text : null,
+                        story_name: storyName,
+                        plan: currentPlan
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok) { alert(data.detail || 'Generate failed'); return; }
+                await pollStoryTask(data.task_id);
+            } catch (err) {
+                alert(`Generate failed: ${err.message}`);
+            } finally {
+                generating = false;
+                document.querySelectorAll('.story-item-actions .btn-primary').forEach(b => { b.disabled = false; });
+                storyGenerateBtn.disabled = false;
+                storyAnalyzeBtn.disabled = false;
+                speakBtn.disabled = false;
+                stopBtn.disabled = true;
+            }
+        });
+
+        async function pollStoryTask(taskId) {
+            while (true) {
+                const res = await fetch(`/api/story/status/${taskId}`);
+                if (!res.ok) {
+                    throw new Error(`Status check failed (${res.status})`);
+                }
+                const t = await res.json();
+                if (t.total > 0) {
+                    storyProgress.style.width = `${Math.round((t.done / t.total) * 100)}%`;
+                }
+                storyProgressText.textContent = t.state === 'running'
+                    ? `Synthesizing ${t.done}/${t.total} (${t.current_role || ''})`
+                    : t.state;
+                if (t.state === 'done') {
+                    alert('Story generated!');
+                    storyPreview.style.display = 'none';
+                    loadStories();
+                    return;
+                }
+                if (t.state === 'failed') {
+                    alert(`Generation failed: ${t.error || 'unknown error'}`);
+                    return;
+                }
+                if (t.state === 'cancelled') {
+                    alert('Generation cancelled');
+                    storyPreview.style.display = 'none';
+                    loadStories();
+                    return;
+                }
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
+
+        async function loadStories() {
+            try {
+                const res = await fetch('/api/stories');
+                const data = await res.json();
+                storiesList.innerHTML = '';
+                if (!data.stories.length) {
+                    storiesList.innerHTML = '<div class="bt-empty">No stories yet</div>';
+                    return;
+                }
+                data.stories.forEach(s => {
+                    const item = document.createElement('div');
+                    item.className = 'story-item';
+                    const info = document.createElement('div');
+                    info.className = 'story-item-info';
+                    const name = document.createElement('span');
+                    name.className = 'story-item-name';
+                    name.textContent = s.name;
+                    const meta = document.createElement('span');
+                    meta.className = 'story-item-meta';
+                    meta.textContent = `${s.segment_count} clips · ${new Date(s.created * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+                    info.appendChild(name);
+                    info.appendChild(meta);
+                    item.appendChild(info);
+                    const actions = document.createElement('div');
+                    actions.className = 'story-item-actions';
+                    const play = document.createElement('button');
+                    play.className = 'btn-primary';
+                    play.textContent = 'Play';
+                    play.disabled = generating;
+                    play.addEventListener('click', async () => {
+                        if (playingStory === s.name) {
+                            // Stop current playback
+                            try { await fetch('/api/stop', { method: 'POST' }); } catch (err) { console.error(err); }
+                            playingStory = null;
+                            playingBtn = null;
+                            play.textContent = 'Play';
+                            play.classList.remove('btn-danger');
+                            play.classList.add('btn-primary');
+                            return;
+                        }
+                        // Revert any other story's button to Play
+                        if (playingBtn && playingBtn !== play) {
+                            playingBtn.textContent = 'Play';
+                            playingBtn.classList.remove('btn-danger');
+                            playingBtn.classList.add('btn-primary');
+                        }
+                        play.disabled = true;
+                        play.textContent = 'Starting...';
+                        try {
+                            const res = await fetch(`/api/stories/${encodeURIComponent(s.name)}/play`, { method: 'POST' });
+                            if (!res.ok) {
+                                const err = await res.json();
+                                throw new Error(err.detail || 'Play failed');
+                            }
+                            playingStory = s.name;
+                            playingBtn = play;
+                            play.textContent = 'Stop';
+                            play.classList.remove('btn-primary');
+                            play.classList.add('btn-danger');
+                        } catch (err) {
+                            alert(`Play failed: ${err.message}`);
+                        }
+                        play.disabled = false;
+                    });
+                    const del = document.createElement('button');
+                    del.className = 'btn-danger';
+                    del.textContent = 'Delete';
+                    del.addEventListener('click', async () => {
+                        if (!confirm(`Delete story "${s.name}"?`)) return;
+                        await fetch(`/api/stories/${encodeURIComponent(s.name)}`, { method: 'DELETE' });
+                        loadStories();
+                    });
+                    actions.appendChild(play);
+                    actions.appendChild(del);
+                    item.appendChild(actions);
+                    storiesList.appendChild(item);
+                });
+            } catch (err) {
+                storiesList.innerHTML = `<div class="bt-empty">Failed to load: ${err.message}</div>`;
+            }
+        }
+
+        loadVoices();
+    </script>
+</body>
+</html>
