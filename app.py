@@ -32,6 +32,7 @@ from models import (
     StoryGenerateRequest,
     StoryListResponse,
     StoryPlan,
+    StoryPlayRequest,
     StoryTaskStatus,
     VoiceCatalog,
     VoiceInfo,
@@ -348,14 +349,22 @@ def stories_list():
 
 
 @app.post("/api/stories/{name}/play")
-async def story_play(name: str):
+async def story_play(name: str, req: StoryPlayRequest | None = None):
     if story_narrator.generation_running():
         raise HTTPException(409, "Story generation in progress")
+    offset_ms = req.offset_ms if req else 0
     playback_list: str | None = None
     try:
         combined = await asyncio.to_thread(story_narrator.combine_story, name)
-        args = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", combined]
+        story_narrator.ensure_combined_duration(name, combined)
+        offset_ms = story_narrator.clamp_resume_offset(name, offset_ms)
+        args = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error"]
+        if offset_ms > 0:
+            args += ["-ss", f"{offset_ms / 1000:.1f}"]
+        args.append(combined)
     except story_narrator.StoryIncomplete:
+        if offset_ms > 0:
+            raise HTTPException(400, "resume is only supported for completed stories")
         # Generation hasn't produced every segment yet (interrupted/crashed
         # run): play the segments that do exist instead of combining a
         # partial set into combined.mp3 and losing the rest.
@@ -376,8 +385,10 @@ async def story_play(name: str):
         stderr=asyncio.subprocess.PIPE,
     )
     story_narrator.set_play_proc(proc)
+    if playback_list is None:
+        story_narrator.combined_play_started(name, offset_ms)
     asyncio.create_task(_reap_story_play(proc, playback_list))
-    return {"ok": True, "playing": name, "partial": playback_list is not None}
+    return {"ok": True, "playing": name, "partial": playback_list is not None, "offset_ms": offset_ms}
 
 
 async def _reap_story_play(proc, playback_list: str | None = None):
@@ -385,7 +396,9 @@ async def _reap_story_play(proc, playback_list: str | None = None):
     if proc.returncode not in (0, -9):
         log.warning("ffplay exited %d: %s", proc.returncode, stderr.decode(errors="replace"))
     story_narrator.clear_play_proc(proc)
-    if playback_list is not None:
+    if playback_list is None:
+        story_narrator.combined_play_finished()
+    else:
         try:
             os.remove(playback_list)
         except OSError:
@@ -427,12 +440,13 @@ async def speak(req: SpeakRequest):
         archive_dir = None
         if req.url:
             # URL speaks are archived under speak_text_dir and listed in the stories tab.
-            # Name the archive after the URL basename (e.g. 14838-0) and reuse it:
-            # a fully processed URL replays combined.mp3, a partial one resumes
-            # from where synthesis was interrupted. Both reuse the stored text,
-            # so no URL fetch is needed. Stop never cleans these up; deletion
-            # happens via the Stories tab.
-            base = story_narrator.speak_name_from_url(req.url)
+            # Name the archive after the user-supplied title, else the URL
+            # basename (e.g. 14838-0), and reuse it: a fully processed URL
+            # replays combined.mp3, a partial one resumes from where synthesis
+            # was interrupted. Both reuse the stored text, so no URL fetch is
+            # needed. Stop never cleans these up; deletion happens via the
+            # Stories tab.
+            base = story_narrator.speak_name_for_url(req.url, req.title)
             if base:
                 speak_id = base
             archive_dir = os.path.join(settings.speak_text_dir, speak_id)
@@ -457,7 +471,7 @@ async def speak(req: SpeakRequest):
                 # stays consistent with the segments already on disk.
                 text = story_narrator.stored_text(speak_id)
                 if not text:
-                    # Corrupt archive (no source.txt): fall back to fetching.
+                    # Corrupt archive (no stored text): fall back to fetching.
                     text = _extract_text(req)
                 voice = story_narrator.stored_voice(speak_id) or req.voice
                 archive_dir = story_narrator.save_speak_archive(speak_id, text, voice)
@@ -475,6 +489,12 @@ async def speak(req: SpeakRequest):
             raise HTTPException(400, "no text to speak")
         if req.url:
             archive_dir = story_narrator.save_speak_archive(speak_id, text, req.voice)
+        elif req.text:
+            # Text speaks use the same store as URL speaks so they appear
+            # in the Stories tab. Title defaults to the first words.
+            base = story_narrator.speak_name_from_text(text, req.title)
+            speak_id = story_narrator.unique_speak_name(base) if base else speak_id
+            archive_dir = story_narrator.save_speak_archive(speak_id, text, req.voice)
         pipe.start(text, req.voice, speak_id, archive_dir)
         log.info("Speak requested: %d chars, voice=%s, id=%s", len(text), req.voice, speak_id)
     except Exception:
@@ -486,6 +506,79 @@ async def speak(req: SpeakRequest):
         text_length=len(text),
         num_segments=1,
         voice=req.voice,
+    )
+
+
+@app.post("/api/render", response_model=SpeakResponse, responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+async def render(req: SpeakRequest):
+    """Render text/URL into the speak archive without playing any audio.
+
+    Same archiving and naming as speak (same store, same title default),
+    but synthesizes segments only — nothing is sent to the speaker.
+    Combining into combined.mp3 happens later in the Stories tab.
+    Shares the pipeline with speak: 409 while a speak or render runs.
+    """
+    pipe = _get_pipeline()
+    if req.text and req.url:
+        raise HTTPException(400, "provide only one of 'text' or 'url'")
+    if not pipe.begin():
+        raise HTTPException(409, "already speaking - stop first")
+    try:
+        speak_id = secrets.token_hex(8)
+        voice = req.voice
+        if req.url:
+            base = story_narrator.speak_name_for_url(req.url, req.title)
+            if base:
+                speak_id = base
+            archive_dir = os.path.join(settings.speak_text_dir, speak_id)
+            combined = os.path.join(archive_dir, "combined.mp3")
+            if os.path.isfile(combined):
+                log.info("URL %s already rendered; nothing to do", speak_id)
+                return SpeakResponse(
+                    speak_id=speak_id,
+                    text_length=len(story_narrator.stored_text(speak_id)),
+                    num_segments=1,
+                    voice=story_narrator.stored_voice(speak_id) or req.voice,
+                )
+            seg_dir = os.path.join(archive_dir, "segments")
+            existing = (
+                sorted(f for f in os.listdir(seg_dir) if is_segment_file(f))
+                if os.path.isdir(seg_dir)
+                else []
+            )
+            if existing:
+                text = story_narrator.stored_text(speak_id)
+                if not text:
+                    text = _extract_text(req)
+                voice = story_narrator.stored_voice(speak_id) or req.voice
+                archive_dir = story_narrator.save_speak_archive(speak_id, text, voice)
+                pipe.start_render(text, voice, speak_id, archive_dir)
+                log.info("Rendering %s from segment %d (no playback)", speak_id, len(existing) + 1)
+                return SpeakResponse(
+                    speak_id=speak_id,
+                    text_length=len(text),
+                    num_segments=1,
+                    voice=voice,
+                )
+        text = _extract_text(req)
+        if not text.strip():
+            raise HTTPException(400, "no text to speak")
+        if req.url:
+            archive_dir = story_narrator.save_speak_archive(speak_id, text, req.voice)
+        else:
+            base = story_narrator.speak_name_from_text(text, req.title)
+            speak_id = story_narrator.unique_speak_name(base) if base else speak_id
+            archive_dir = story_narrator.save_speak_archive(speak_id, text, req.voice)
+        pipe.start_render(text, voice, speak_id, archive_dir)
+        log.info("Render requested: %d chars, voice=%s, id=%s", len(text), voice, speak_id)
+    except Exception:
+        pipe.set_idle()
+        raise
+    return SpeakResponse(
+        speak_id=speak_id,
+        text_length=len(text),
+        num_segments=1,
+        voice=voice,
     )
 
 

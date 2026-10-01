@@ -17,6 +17,10 @@
             --border: #cfd8dc;
             --success: #2e7d32;
             --danger: #c62828;
+            --danger-hover: #8e1e1e;
+            --secondary-hover: #eceff1;
+            --warning-bg: #fff3e0;
+            --warning: #e65100;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -70,6 +74,10 @@
         .icon-btn.danger:hover, .icon-btn.danger:active {
             color: var(--danger);
             border-color: var(--danger);
+        }
+        .icon-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
         .icon-btn svg {
             width: 18px;
@@ -260,10 +268,26 @@
             background: var(--danger);
             color: white;
         }
+        .btn-danger:hover, .btn-danger:active {
+            background: var(--danger-hover);
+        }
+        .btn-danger:disabled {
+            background: var(--danger);
+            cursor: not-allowed;
+            opacity: 0.65;
+        }
         .btn-secondary {
             background: var(--bg-card);
             color: var(--text-primary);
             border: 2px solid var(--border);
+        }
+        .btn-secondary:hover, .btn-secondary:active {
+            background: var(--secondary-hover);
+        }
+        .btn-secondary:disabled {
+            background: var(--bg-card);
+            cursor: not-allowed;
+            opacity: 0.65;
         }
         .status {
             display: flex;
@@ -645,6 +669,10 @@
                                     <span>Max 50,000</span>
                                 </div>
                             </div>
+                            <div>
+                                <label for="speak-title" style="margin-top: 8px;">Title (editable, saved as mp3 name)</label>
+                                <input type="text" id="speak-title" placeholder="Defaults to first words / URL name..." maxlength="100" style="width: 100%; background: var(--bg-secondary); border: 2px solid var(--border); border-radius: 10px; color: var(--text-primary); padding: 12px; font-size: 16px; font-family: inherit;">
+                            </div>
                         </div>
 
 
@@ -717,6 +745,7 @@
         <div class="card">
             <div class="button-group">
                 <button id="speak-btn" class="btn-primary">Speak</button>
+                <button id="render-btn" class="btn-secondary">Render</button>
                 <button id="stop-btn" class="btn-danger" disabled>Stop</button>
                 <button id="clear-btn" class="btn-secondary">Clear</button>
             </div>
@@ -747,6 +776,17 @@
             <div class="modal-actions">
                 <button id="confirm-cancel" class="btn-secondary">Cancel</button>
                 <button id="confirm-ok" class="btn-danger">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="resume-modal" class="modal-overlay" style="display: none;">
+        <div class="modal">
+            <h2>Resume playback?</h2>
+            <p id="resume-message">Stopped partway last time.</p>
+            <div class="modal-actions">
+                <button id="resume-start" class="btn-secondary">From start</button>
+                <button id="resume-go" class="btn-primary">Resume</button>
             </div>
         </div>
     </div>
@@ -784,6 +824,7 @@
         const voiceSelect = document.getElementById('voice');
         const voiceInfo = document.getElementById('voice-info');
         const speakBtn = document.getElementById('speak-btn');
+        const renderBtn = document.getElementById('render-btn');
         const stopBtn = document.getElementById('stop-btn');
         const clearBtn = document.getElementById('clear-btn');
         const statusDiv = document.getElementById('status');
@@ -798,6 +839,44 @@
         const confirmMessage = document.getElementById('confirm-message');
         const confirmOk = document.getElementById('confirm-ok');
         const confirmCancel = document.getElementById('confirm-cancel');
+        const resumeModal = document.getElementById('resume-modal');
+        const resumeMessage = document.getElementById('resume-message');
+        const resumeGo = document.getElementById('resume-go');
+        const resumeStart = document.getElementById('resume-start');
+        let pendingResume = null;
+
+        function fmtMs(ms) {
+            const s = Math.max(0, Math.round((ms || 0) / 1000));
+            return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+        }
+
+        function resumeLabel(s) {
+            if ((s.duration_ms || 0) > 0) {
+                return `${fmtMs(s.resume_ms)} of ${fmtMs(s.duration_ms)}`;
+            }
+            return fmtMs(s.resume_ms);
+        }
+
+        function hideResume() {
+            resumeModal.style.display = 'none';
+            pendingResume = null;
+        }
+
+        resumeGo.addEventListener('click', () => {
+            const r = pendingResume;
+            hideResume();
+            if (r) startStoryPlay(r.s, r.play, r.s.resume_ms);
+        });
+
+        resumeStart.addEventListener('click', () => {
+            const r = pendingResume;
+            hideResume();
+            if (r) startStoryPlay(r.s, r.play, 0);
+        });
+
+        resumeModal.addEventListener('click', (e) => {
+            if (e.target === resumeModal) hideResume();
+        });
         const btStatusBtn = document.getElementById('bt-status-btn');
         const btSettingsBtn = document.getElementById('bt-settings-btn');
         const btModal = document.getElementById('bt-modal');
@@ -813,6 +892,28 @@
         let statusInterval = null;
         let pendingAction = null;
         let currentDefaultMac = null;
+        const speakTitleInput = document.getElementById('speak-title');
+        let titleDirty = false;
+
+        function defaultTitle(text) {
+            const words = (text || '').split(/\s+/).filter(Boolean).slice(0, 4);
+            return words.join(' ').slice(0, 60);
+        }
+
+        function defaultUrlName(url) {
+            try {
+                const path = new URL(url).pathname.replace(/\/+$/, '');
+                const base = path.slice(path.lastIndexOf('/') + 1) || '';
+                const clean = base.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.-]+|[.-]+$/g, '');
+                return clean.replace(/\.[^.]*$/, '') || '';
+            } catch {
+                return '';
+            }
+        }
+
+        function currentDefaultTitle() {
+            return getInputMode() === 'text' ? defaultTitle(textArea.value) : defaultUrlName(urlInputEl.value);
+        }
 
         function getInputMode() {
             const checked = document.querySelector('input[name="input-mode"]:checked');
@@ -955,8 +1056,8 @@
             if (device.mac.toUpperCase() === currentDefaultMac) {
                 const def = document.createElement('span');
                 def.className = 'bt-badge';
-                def.style.background = '#fff3e0';
-                def.style.color = '#e65100';
+                def.style.background = 'var(--warning-bg)';
+                def.style.color = 'var(--warning)';
                 def.textContent = 'System Default';
                 row.appendChild(def);
             }
@@ -1150,14 +1251,31 @@
             textField.style.display = mode === 'text' ? 'flex' : 'none';
             currentPlan = null;
             storyPreview.style.display = 'none';
+            titleDirty = false;
+            speakTitleInput.value = currentDefaultTitle();
         }));
 
         textArea.addEventListener('input', () => {
             charCount.textContent = `${textArea.value.length.toLocaleString()} characters`;
+            if (!titleDirty && getInputMode() === 'text') {
+                speakTitleInput.value = defaultTitle(textArea.value);
+            }
+        });
+
+        urlInputEl.addEventListener('input', () => {
+            if (!titleDirty && getInputMode() === 'url') {
+                speakTitleInput.value = defaultUrlName(urlInputEl.value);
+            }
+        });
+
+        speakTitleInput.addEventListener('input', () => {
+            titleDirty = speakTitleInput.value !== currentDefaultTitle();
         });
 
         clearBtn.addEventListener('click', () => {
             textArea.value = '';
+            speakTitleInput.value = '';
+            titleDirty = false;
             urlInputEl.value = '';
             charCount.textContent = '0 characters';
             audioPlayer.style.display = 'none';
@@ -1212,33 +1330,45 @@
             populateVoices(filtered);
         });
 
-        speakBtn.addEventListener('click', async () => {
+        function buildSpeakPayload() {
             const voice = voiceSelect.value;
             if (!voice) {
                 alert('Please select a voice');
-                return;
+                return null;
             }
-
             const mode = getInputMode();
-            let payload = { voice, input_type: mode };
+            const payload = { voice, input_type: mode };
             if (mode === 'text') {
-                if (!textArea.value.trim()) { alert('Please enter text'); return; }
+                if (!textArea.value.trim()) { alert('Please enter text'); return null; }
                 payload.text = textArea.value;
             } else {
-                if (!urlInputEl.value.trim()) { alert('Please enter a URL'); return; }
+                if (!urlInputEl.value.trim()) { alert('Please enter a URL'); return null; }
                 payload.url = urlInputEl.value;
             }
+            const title = speakTitleInput.value.trim() || currentDefaultTitle();
+            if (title) { payload.title = title; }
+            return payload;
+        }
+
+        function setWorking(activeBtn, label) {
+            speakBtn.disabled = true;
+            renderBtn.disabled = true;
+            activeBtn.textContent = label;
+            activeBtn.classList.add('pulse');
+            stopBtn.disabled = false;
+            storyAnalyzeBtn.disabled = true;
+            storyGenerateBtn.disabled = true;
+            statusDiv.style.display = 'flex';
+            statusValue.textContent = 'Synthesizing...';
+            statusValue.style.color = 'var(--accent)';
+        }
+
+        speakBtn.addEventListener('click', async () => {
+            const payload = buildSpeakPayload();
+            if (!payload) return;
 
             try {
-                speakBtn.disabled = true;
-                speakBtn.textContent = 'Synthesizing...';
-                speakBtn.classList.add('pulse');
-                stopBtn.disabled = false;
-                storyAnalyzeBtn.disabled = true;
-                storyGenerateBtn.disabled = true;
-                statusDiv.style.display = 'flex';
-                statusValue.textContent = 'Synthesizing...';
-                statusValue.style.color = 'var(--accent)';
+                setWorking(speakBtn, 'Synthesizing...');
 
                 const res = await fetch('/api/speak', {
                     method: 'POST',
@@ -1249,6 +1379,33 @@
                 if (!res.ok) {
                     const err = await res.json();
                     throw new Error(err.detail || 'Failed to speak');
+                }
+
+                const data = await res.json();
+                currentSpeakId = data.speak_id;
+                startStatusPolling();
+            } catch (err) {
+                alert(err.message);
+                resetUI();
+            }
+        });
+
+        renderBtn.addEventListener('click', async () => {
+            const payload = buildSpeakPayload();
+            if (!payload) return;
+
+            try {
+                setWorking(renderBtn, 'Rendering...');
+
+                const res = await fetch('/api/render', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Failed to render');
                 }
 
                 const data = await res.json();
@@ -1330,6 +1487,9 @@
             speakBtn.disabled = false;
             speakBtn.textContent = 'Speak';
             speakBtn.classList.remove('pulse');
+            renderBtn.disabled = false;
+            renderBtn.textContent = 'Render';
+            renderBtn.classList.remove('pulse');
             stopBtn.disabled = true;
             storyAnalyzeBtn.disabled = false;
             storyGenerateBtn.disabled = false;
@@ -1496,6 +1656,36 @@
             }
         }
 
+        async function startStoryPlay(s, play, offsetMs) {
+            // Revert any other story's button to Play
+            if (playingBtn && playingBtn !== play) {
+                playingBtn.textContent = 'Play';
+                playingBtn.classList.remove('btn-danger');
+                playingBtn.classList.add('btn-primary');
+            }
+            play.disabled = true;
+            play.textContent = 'Starting...';
+            try {
+                const res = await fetch(`/api/stories/${encodeURIComponent(s.name)}/play`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ offset_ms: offsetMs || 0 })
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Play failed');
+                }
+                playingStory = s.name;
+                playingBtn = play;
+                play.textContent = 'Stop';
+                play.classList.remove('btn-primary');
+                play.classList.add('btn-danger');
+            } catch (err) {
+                alert(`Play failed: ${err.message}`);
+            }
+            play.disabled = false;
+        }
+
         async function loadStories() {
             try {
                 const res = await fetch('/api/stories');
@@ -1516,6 +1706,9 @@
                     const meta = document.createElement('span');
                     meta.className = 'story-item-meta';
                     meta.textContent = `${s.segment_count} clips · ${new Date(s.created * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+                    if ((s.resume_ms || 0) >= 3000) {
+                        meta.textContent += ` · resumes ${resumeLabel(s)}`;
+                    }
                     info.appendChild(name);
                     info.appendChild(meta);
                     item.appendChild(info);
@@ -1527,38 +1720,27 @@
                     play.disabled = generating;
                     play.addEventListener('click', async () => {
                         if (playingStory === s.name) {
-                            // Stop current playback
+                            // Stop current playback; refresh the list so the
+                            // newly remembered position shows up.
                             try { await fetch('/api/stop', { method: 'POST' }); } catch (err) { console.error(err); }
                             playingStory = null;
                             playingBtn = null;
                             play.textContent = 'Play';
                             play.classList.remove('btn-danger');
                             play.classList.add('btn-primary');
+                            setTimeout(() => {
+                                if (storiesPanel.style.display !== 'none') loadStories();
+                            }, 1500);
                             return;
                         }
-                        // Revert any other story's button to Play
-                        if (playingBtn && playingBtn !== play) {
-                            playingBtn.textContent = 'Play';
-                            playingBtn.classList.remove('btn-danger');
-                            playingBtn.classList.add('btn-primary');
+                        if ((s.resume_ms || 0) >= 3000) {
+                            resumeMessage.textContent = `"${s.name}" stopped at ${resumeLabel(s)} last time.`;
+                            resumeGo.textContent = `Resume ${fmtMs(s.resume_ms)}`;
+                            pendingResume = { s, play };
+                            resumeModal.style.display = 'flex';
+                            return;
                         }
-                        play.disabled = true;
-                        play.textContent = 'Starting...';
-                        try {
-                            const res = await fetch(`/api/stories/${encodeURIComponent(s.name)}/play`, { method: 'POST' });
-                            if (!res.ok) {
-                                const err = await res.json();
-                                throw new Error(err.detail || 'Play failed');
-                            }
-                            playingStory = s.name;
-                            playingBtn = play;
-                            play.textContent = 'Stop';
-                            play.classList.remove('btn-primary');
-                            play.classList.add('btn-danger');
-                        } catch (err) {
-                            alert(`Play failed: ${err.message}`);
-                        }
-                        play.disabled = false;
+                        startStoryPlay(s, play, 0);
                     });
                     const del = document.createElement('button');
                     del.className = 'btn-danger';

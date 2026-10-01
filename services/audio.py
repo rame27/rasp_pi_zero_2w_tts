@@ -312,10 +312,12 @@ def _write_speak_metadata(
     speak), the original created timestamp is preserved so the story keeps its
     first-seen position in the Stories tab, and playback_done (the resume
     point written by _set_playback_done) is carried forward so this rewrite
-    does not reset a partially played archive back to segment 1.
+    does not reset a partially played archive back to segment 1. The combined
+    playback position/duration are carried forward the same way.
     """
     created = time.time()
     playback_done: int | None = None
+    carried: dict = {}
     meta_path = os.path.join(archive_dir, "metadata.json")
     if os.path.isfile(meta_path):
         try:
@@ -324,6 +326,9 @@ def _write_speak_metadata(
             created = old.get("created", created)
             if type(old.get("playback_done")) is int and old["playback_done"] >= 0:
                 playback_done = old["playback_done"]
+            for key in ("combined_position_ms", "combined_duration_ms"):
+                if type(old.get(key)) is int and old[key] >= 0:
+                    carried[key] = old[key]
         except (OSError, json.JSONDecodeError):
             pass
     metadata = {
@@ -334,6 +339,7 @@ def _write_speak_metadata(
         "segments": [{"role": "Narrator", "start_word": 0, "end_word": len(text.split()), "voice": voice}],
         "complete": complete,
     }
+    metadata.update(carried)
     if segment_count is not None:
         metadata["segment_count"] = segment_count
     if playback_done is not None:
@@ -456,6 +462,52 @@ class NarratorPipeline:
         self.start_time = time.time()
         self.state = "playing"
         self._task = asyncio.create_task(self._run_combined(combined_path, speak_id))
+
+    def start_render(self, text: str, voice: str, speak_id: str, archive_dir: str) -> None:
+        """Render text into the archive's segments dir without playing audio.
+
+        Shares the pipeline busy-guard with speak (begin/409), so a render
+        never runs while the speaker is playing and vice-versa.
+        """
+        self.speak_id = speak_id
+        self.segments_total = 0
+        self.segments_done = 0
+        self.start_time = time.time()
+        self.state = "synthesizing"
+        self._task = asyncio.create_task(self._run_render(text, voice, speak_id, archive_dir))
+
+    async def _run_render(self, text: str, voice: str, speak_id: str, archive_dir: str) -> None:
+        """Synthesize each segment into the archive; never touch the speaker.
+
+        Per-segment files stay in place for the Stories tab to combine on
+        demand; already-synthesized segments are skipped (resume).
+        """
+        try:
+            sentences = await asyncio.to_thread(_group_sentences, text)
+            self.segments_total = len(sentences)
+            self.state = "synthesizing"
+            seg_dir = os.path.join(archive_dir, "segments")
+            os.makedirs(seg_dir, exist_ok=True)
+            for i, sentence in enumerate(sentences, start=1):
+                if self._stop_requested:
+                    break
+                seg_file = os.path.join(seg_dir, f"{i:03d}.mp3")
+                if os.path.exists(seg_file):
+                    self.segments_done = i
+                    continue
+                tone_ms = settings.playback_delay_ms if i == 1 else settings.sentence_padding_ms
+                await _synth_segment_with_tone(sentence, voice, seg_file, tone_ms)
+                self.segments_done = i
+            if not self._stop_requested:
+                _write_speak_metadata(archive_dir, speak_id, text, voice, len(sentences), complete=True)
+                log.info("Rendered %s (%d segments)", speak_id, len(sentences))
+        except asyncio.CancelledError:
+            log.info("Render cancelled for %s", speak_id)
+            raise
+        except Exception as exc:
+            log.error("Pipeline error for %s: %s", speak_id, exc)
+        finally:
+            self.set_idle()
 
     async def _run(self, text: str, voice: str, speak_id: str, archive_dir: str | None = None) -> None:
         output_path = os.path.join(self.export_dir, f"{speak_id}.mp3")

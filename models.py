@@ -21,12 +21,20 @@ class SpeakRequest(BaseModel):
     text: str | None = Field(default=None, max_length=50000)
     url: HttpUrl | None = None
     voice: str = Field(default="en-US-AndrewNeural")
+    title: str | None = Field(default=None, max_length=100)
 
     @field_validator("text")
     @classmethod
     def validate_text(cls, v: str | None) -> str | None:
         if v is not None:
             v = v.strip()
+        return v
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str | None) -> str | None:
+        if v is not None:
+            v = v.strip() or None
         return v
 
 
@@ -122,6 +130,8 @@ class StoryInfo(BaseModel):
     roles: list[str]
     segment_count: int
     created: float
+    resume_ms: int = 0
+    duration_ms: int = 0
 
 
 class StoryListResponse(BaseModel):
@@ -159,3 +169,7 @@ class StoryTaskStatus(BaseModel):
     done: int = 0
     current_role: str | None = None
     error: str | None = None
+
+
+class StoryPlayRequest(BaseModel):
+    offset_ms: int = Field(default=0, ge=0)

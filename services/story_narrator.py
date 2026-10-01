@@ -54,12 +54,167 @@ def clear_play_proc(proc) -> None:
 
 def stop_playback() -> None:
     global _play_proc
+    if _play_state["name"] is not None:
+        combined_play_stopped()
     if _play_proc is not None and _play_proc.returncode is None:
         try:
             _play_proc.kill()
         except ProcessLookupError:
             pass
     _play_proc = None
+
+
+# --- Combined-playback position tracking (resume support) -------------------
+# Remembers where combined.mp3 playback stopped (wall-clock, ~1s accuracy)
+# so the next play can offer resume-vs-start. The position is heartbeat-
+# persisted every few seconds, so even an abrupt kill leaves the nearest
+# stop point behind. Segment-list playback is excluded: unfinished stories
+# already resume per segment via playback_done.
+
+RESUME_MIN_MS = 3000
+_HEARTBEAT_S = 5.0
+
+_play_state: dict = {"name": None, "offset_ms": 0, "started": 0.0, "stopped": False}
+_play_heartbeat_task: asyncio.Task | None = None
+
+
+def _play_position_ms() -> int:
+    """Current combined-playback position: starting offset + elapsed."""
+    st = _play_state
+    if st["name"] is None:
+        return 0
+    return st["offset_ms"] + int((time.monotonic() - st["started"]) * 1000)
+
+
+def _touch_combined_meta(name: str, **fields) -> None:
+    """Read-modify-write metadata.json, preserving all other keys."""
+    try:
+        safe = _safe_name(name)
+    except ValueError:
+        return
+    meta_path = os.path.join(_story_path(safe), "metadata.json")
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    meta.update(fields)
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    except OSError:
+        pass
+
+
+def _probe_duration_ms(path: str) -> int | None:
+    """Duration of an audio file in ms via ffprobe (None when unknown)."""
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        seconds = float(proc.stdout.strip())
+        if seconds > 0:
+            return int(seconds * 1000)
+    except (subprocess.SubprocessError, ValueError, OSError):
+        pass
+    return None
+
+
+async def _position_heartbeat(name: str) -> None:
+    """Persist the playback position every few seconds until cancelled."""
+    try:
+        while True:
+            await asyncio.sleep(_HEARTBEAT_S)
+            _touch_combined_meta(name, combined_position_ms=_play_position_ms())
+    except asyncio.CancelledError:
+        pass
+
+
+def _stop_heartbeat() -> None:
+    global _play_heartbeat_task
+    task, _play_heartbeat_task = _play_heartbeat_task, None
+    if task is not None and not task.done():
+        task.cancel()
+
+
+def combined_play_started(name: str, offset_ms: int = 0) -> None:
+    """Begin tracking a combined.mp3 playback from the given offset."""
+    try:
+        name = _safe_name(name)
+    except ValueError:
+        return
+    _stop_heartbeat()
+    _play_state.update({
+        "name": name,
+        "offset_ms": max(0, offset_ms),
+        "started": time.monotonic(),
+        "stopped": False,
+    })
+    global _play_heartbeat_task
+    _play_heartbeat_task = asyncio.create_task(_position_heartbeat(name))
+
+
+def combined_play_stopped() -> None:
+    """Persist the stop point of a combined playback (Stop button / switch)."""
+    if _play_state["name"] is None:
+        return
+    _play_state["stopped"] = True
+    _touch_combined_meta(_play_state["name"], combined_position_ms=_play_position_ms())
+    _stop_heartbeat()
+    _play_state["name"] = None
+
+
+def combined_play_finished() -> None:
+    """Clear the saved position after a playback that ran to the end.
+
+    A playback ended by stop_playback() keeps its persisted position;
+    only a natural finish clears it.
+    """
+    _stop_heartbeat()
+    name, stopped = _play_state["name"], _play_state["stopped"]
+    _play_state["name"] = None
+    if name is not None and not stopped:
+        _touch_combined_meta(name, combined_position_ms=0)
+
+
+def ensure_combined_duration(name: str, combined_path: str) -> None:
+    """Probe and store the combined duration once (covers older archives)."""
+    try:
+        safe = _safe_name(name)
+    except ValueError:
+        return
+    meta_path = os.path.join(_story_path(safe), "metadata.json")
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            if type(json.load(f).get("combined_duration_ms")) is int:
+                return
+    except (OSError, json.JSONDecodeError):
+        return
+    duration_ms = _probe_duration_ms(combined_path)
+    if duration_ms is not None:
+        _touch_combined_meta(safe, combined_duration_ms=duration_ms)
+
+
+def clamp_resume_offset(name: str, offset_ms: int) -> int:
+    """Clamp a resume offset into [0, duration); past-the-end restarts."""
+    if offset_ms <= 0:
+        return 0
+    try:
+        safe = _safe_name(name)
+    except ValueError:
+        return 0
+    try:
+        with open(os.path.join(_story_path(safe), "metadata.json"), encoding="utf-8") as f:
+            duration_ms = json.load(f).get("combined_duration_ms", 0)
+    except (OSError, json.JSONDecodeError):
+        duration_ms = 0
+    if type(duration_ms) is int and duration_ms > 0 and offset_ms >= duration_ms:
+        return 0
+    return offset_ms
 
 
 def cancel_all() -> None:
@@ -97,6 +252,51 @@ def speak_name_from_url(url: str) -> str:
     return name
 
 
+def _sanitize_speak_name(raw: str) -> str:
+    """Sanitize a title/derived name the same way as URL basenames."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", raw.strip()).strip(".-")
+    root, _ext = os.path.splitext(name)
+    name = root or name
+    if not name or name in (".", ".."):
+        return ""
+    return name[:80]
+
+
+def speak_name_from_text(text: str, title: str | None = None) -> str:
+    """Derive a filesystem-safe archive name for text input.
+
+    Uses the user-supplied title when present, else the first 4 words
+    of the text. Returns "" when nothing usable remains.
+    """
+    source = (title or "").strip()
+    if not source:
+        words = (text or "").split()
+        source = " ".join(words[:4])
+    if not source.strip():
+        return ""
+    return _sanitize_speak_name(source)
+
+
+def unique_speak_name(base: str) -> str:
+    """Make an archive name unique under speak_text_dir (append -2, -3...)."""
+    candidate = base
+    suffix = 2
+    while os.path.isdir(os.path.join(settings.speak_text_dir, candidate)):
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def speak_name_for_url(url: str, title: str | None = None) -> str:
+    """Archive name for a URL speak: user-supplied title wins, else URL basename.
+
+    Returns "" when neither yields a usable name (caller falls back to a hex id).
+    """
+    if (title or "").strip():
+        return _sanitize_speak_name(title)
+    return speak_name_from_url(url)
+
+
 def stored_voice(name: str) -> str | None:
     """Voice used by an existing URL-speak archive (from its metadata.json)."""
     meta_path = os.path.join(settings.speak_text_dir, name, "metadata.json")
@@ -112,11 +312,19 @@ def stored_voice(name: str) -> str | None:
 
 
 def stored_text(name: str) -> str:
-    """Text stored in an existing URL-speak archive (source.txt).
+    """Text stored in an existing speak archive (metadata.json "source").
 
-    Returns "" when the archive or its source.txt is missing (caller falls
-    back to fetching the URL).
+    Falls back to legacy source.txt for archives written before the
+    duplicate file was removed. Returns "" when neither exists (caller
+    falls back to fetching the URL).
     """
+    try:
+        with open(os.path.join(settings.speak_text_dir, name, "metadata.json"), encoding="utf-8") as f:
+            text = json.load(f).get("source", "")
+        if text:
+            return text
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
     try:
         with open(os.path.join(settings.speak_text_dir, name, "source.txt"), encoding="utf-8") as f:
             return f.read()
@@ -180,16 +388,15 @@ def _story_path(name: str) -> str:
 
 
 def save_speak_archive(speak_id: str, text: str, voice: str) -> str:
-    """Create the archive dir for a URL speak: save the curated text, return the dir path.
+    """Create the archive dir for a speak: store the text in metadata, return the dir path.
 
-    Metadata is written immediately so the archive shows in the Stories tab
-    even if synthesis is stopped or interrupted; _run_archived fills in the
-    real segment_count once synthesis completes.
+    The text lives in metadata.json ("source"); no separate source.txt is
+    written. Metadata is written immediately so the archive shows in the
+    Stories tab even if synthesis is stopped or interrupted; _run_archived
+    fills in the real segment_count once synthesis completes.
     """
     path = os.path.join(settings.speak_text_dir, speak_id)
     os.makedirs(os.path.join(path, "segments"), exist_ok=True)
-    with open(os.path.join(path, "source.txt"), "w", encoding="utf-8") as f:
-        f.write(text)
     _write_speak_metadata(path, speak_id, text, voice)
     return path
 
@@ -284,26 +491,23 @@ async def generate_story(
                     else []
                 )
                 if existing:
-                    src_text = ""
-                    src_path = os.path.join(url_archive, "source.txt")
-                    if os.path.isfile(src_path):
-                        with open(src_path, encoding="utf-8") as f:
-                            src_text = f.read()
-                    voice = stored_voice(url_name) or DEFAULT_VOICE
-                    if pipeline is not None and pipeline.begin():
-                        pipeline.start(src_text, voice, url_name, url_archive)
-                    task["total"] = 1
-                    task["done"] = 1
-                    task["state"] = "done"
-                    log.info("URL %s already processed; resuming from segment %d", url_name, len(existing) + 1)
-                    return
+                    src_text = stored_text(url_name)
+                    if src_text:
+                        voice = stored_voice(url_name) or DEFAULT_VOICE
+                        if pipeline is not None and pipeline.begin():
+                            pipeline.start(src_text, voice, url_name, url_archive)
+                        task["total"] = 1
+                        task["done"] = 1
+                        task["state"] = "done"
+                        log.info("URL %s already processed; resuming from segment %d", url_name, len(existing) + 1)
+                        return
+                    # Segments but no stored text (interrupted before metadata
+                    # was written): fall through and regenerate from scratch.
         name = _safe_name(story_name)
         if text is None:
             # Raw text (uncurated) so the LLM's word offsets match what it analyzed.
             text, _ = text_source.fetch_text(url, curate=False)
         os.makedirs(_story_path(name), exist_ok=True)
-        with open(os.path.join(_story_path(name), "source.txt"), "w", encoding="utf-8") as f:
-            f.write(text)
         word_count = len(text.split())
         segments = [s for s in plan.segments if s.end_word <= word_count]
         if not segments:
@@ -463,12 +667,32 @@ def combine_story(name: str) -> str:
             except OSError:
                 pass
         # Record the clip count, then clean up the individual segments.
+        # The text already lives in metadata.json ("source"), so the legacy
+        # source.txt duplicate and any interrupted-run *.raw.mp3 leftovers go
+        # too: a finished archive keeps only combined.mp3 + metadata.json.
+        # The combined duration is stored for the resume UI ("12:34 of 45:10").
         _record_segment_count(name, len(files))
         for fn in files:
             try:
                 os.remove(os.path.join(seg_dir, fn))
             except OSError:
                 pass
+        try:
+            os.remove(os.path.join(_story_path(name), "source.txt"))
+        except OSError:
+            pass
+        try:
+            leftovers = [f for f in os.listdir(seg_dir) if f.endswith(".raw.mp3")]
+        except OSError:
+            leftovers = []
+        for fn in leftovers:
+            try:
+                os.remove(os.path.join(seg_dir, fn))
+            except OSError:
+                pass
+        duration_ms = _probe_duration_ms(combined)
+        if duration_ms is not None:
+            _touch_combined_meta(name, combined_duration_ms=duration_ms)
         return combined
 
 
@@ -508,11 +732,15 @@ def list_stories() -> list[StoryInfo]:
                 seg_dir = _segments_path(name)
                 dir_count = len([x for x in os.listdir(seg_dir) if is_segment_file(x)]) if os.path.isdir(seg_dir) else 0
                 seg_count = meta.get("segment_count", dir_count)
+                resume_ms = meta.get("combined_position_ms", 0)
+                duration_ms = meta.get("combined_duration_ms", 0)
                 stories.append(StoryInfo(
                     name=name,
                     roles=[r["role"] for r in meta.get("roles", [])],
                     segment_count=seg_count,
                     created=meta.get("created", 0.0),
+                    resume_ms=resume_ms if type(resume_ms) is int and resume_ms > 0 else 0,
+                    duration_ms=duration_ms if type(duration_ms) is int and duration_ms > 0 else 0,
                 ))
             except (OSError, json.JSONDecodeError, KeyError):
                 continue
