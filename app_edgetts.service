@@ -1,0 +1,13 @@
+[Unit]
+Description=Edge-TTS Web UI
+After=network.target sound.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/app_edgetts
+ExecStart=/root/piper/piper_env/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

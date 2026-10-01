@@ -37,6 +37,9 @@ def test_synthesize_sentences_reports_progress(monkeypatch, tmp_path):
             return b"", b""
 
     async def fake_exec(*args, **kwargs):
+        # Simulate ffmpeg writing its output file (last CLI argument).
+        with open(args[-1], "wb") as f:
+            f.write(b"mp3")
         return FakeProc()
 
     monkeypatch.setattr("services.audio.edge_tts.Communicate", FakeCommunicate)
@@ -69,6 +72,9 @@ def test_synth_segment_with_tone_prepends_tone(monkeypatch, tmp_path):
             return b"", b""
 
     async def fake_exec(*args, **kwargs):
+        # Simulate ffmpeg writing its output file (last CLI argument).
+        with open(args[-1], "wb") as f:
+            f.write(b"mp3")
         return FakeProc()
 
     monkeypatch.setattr("services.audio.edge_tts.Communicate", FakeCommunicate)

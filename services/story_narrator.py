@@ -18,7 +18,7 @@ import edge_tts
 from config import settings
 from models import RoleInfo, SegmentInfo, StoryInfo, StoryPlan
 from services import text_source
-from services.audio import _ensure_speaker_connected, _write_speak_metadata, is_segment_file
+from services.audio import _edge_save_with_retry, _ensure_speaker_connected, _write_speak_metadata, is_segment_file
 from services.groq_llm import DEFAULT_VOICE, slice_text
 
 log = logging.getLogger(__name__)
@@ -223,8 +223,7 @@ def _write_metadata(
 
 
 async def _synth_segment(text: str, voice: str, out_path: str) -> None:
-    comm = edge_tts.Communicate(text, voice)
-    await comm.save(out_path)
+    await _edge_save_with_retry(text, voice, out_path)
 
 
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")

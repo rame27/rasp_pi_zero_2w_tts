@@ -138,6 +138,28 @@ def _group_sentences(text: str, max_per_group: int | None = None) -> list[str]:
     return groups
 
 
+async def _edge_save_with_retry(text: str, voice: str, out_path: str, attempts: int = 3) -> None:
+    """Synthesize text to out_path via edge-tts, retrying transient failures.
+
+    edge-tts intermittently fails on a healthy connection (e.g. "No audio was
+    received") - a couple of short-backoff retries ride out the blip instead of
+    killing the whole pipeline mid-run. CancelledError (stop button) derives
+    from BaseException, so a user-initiated stop is never retried.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            comm = edge_tts.Communicate(text, voice)
+            await comm.save(out_path)
+            return
+        except Exception as exc:
+            if attempt == attempts:
+                raise
+            log.warning(
+                "edge-tts attempt %d/%d failed for %s: %s", attempt, attempts, out_path, exc
+            )
+            await asyncio.sleep(2 * attempt)
+
+
 async def _synthesize_sentences(
     sentences: list[str],
     voice: str,
@@ -163,8 +185,7 @@ async def _synthesize_sentences(
         for i, sentence in enumerate(sentences):
             part_path = f"{output_path}.part{i}.mp3"
             part_paths.append(part_path)  # register before await so cancel cleans it
-            communicate = edge_tts.Communicate(sentence, voice)
-            await communicate.save(part_path)
+            await _edge_save_with_retry(sentence, voice, part_path)
             if progress_cb:
                 progress_cb(i + 1)
 
@@ -231,9 +252,8 @@ async def _synth_segment_with_tone(text: str, voice: str, out_path: str, tone_ms
     ffmpeg concat keep the audio path continuously active between sentences.
     """
     tmp_path = f"{out_path}.raw.mp3"
-    comm = edge_tts.Communicate(text, voice)
     try:
-        await comm.save(tmp_path)
+        await _edge_save_with_retry(text, voice, tmp_path)
     except asyncio.CancelledError:
         try:
             os.remove(tmp_path)
@@ -290,14 +310,20 @@ def _write_speak_metadata(
 
     When the archive already has metadata (e.g. a resumed or replayed URL
     speak), the original created timestamp is preserved so the story keeps its
-    first-seen position in the Stories tab.
+    first-seen position in the Stories tab, and playback_done (the resume
+    point written by _set_playback_done) is carried forward so this rewrite
+    does not reset a partially played archive back to segment 1.
     """
     created = time.time()
+    playback_done: int | None = None
     meta_path = os.path.join(archive_dir, "metadata.json")
     if os.path.isfile(meta_path):
         try:
             with open(meta_path, encoding="utf-8") as f:
-                created = json.load(f).get("created", created)
+                old = json.load(f)
+            created = old.get("created", created)
+            if type(old.get("playback_done")) is int and old["playback_done"] >= 0:
+                playback_done = old["playback_done"]
         except (OSError, json.JSONDecodeError):
             pass
     metadata = {
@@ -310,8 +336,44 @@ def _write_speak_metadata(
     }
     if segment_count is not None:
         metadata["segment_count"] = segment_count
+    if playback_done is not None:
+        metadata["playback_done"] = playback_done
     with open(os.path.join(archive_dir, "metadata.json"), "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
+
+
+def _get_playback_done(archive_dir: str) -> int:
+    """Segments fully played in previous runs (0 when absent or unreadable)."""
+    try:
+        with open(os.path.join(archive_dir, "metadata.json"), encoding="utf-8") as f:
+            n = json.load(f).get("playback_done", 0)
+        return n if type(n) is int and n >= 0 else 0
+    except (OSError, json.JSONDecodeError):
+        return 0
+
+
+def _set_playback_done(archive_dir: str, played: int) -> None:
+    """Persist how many segments have been fully played (the resume point).
+
+    Written by the consumer after each segment finishes; a segment interrupted
+    by a stop/app kill is not counted, so the next run replays it in full.
+    Never moves the point backwards. If metadata is missing, the resume point
+    cannot be stored and _run_archived falls back to replaying existing files.
+    """
+    meta_path = os.path.join(archive_dir, "metadata.json")
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    if type(meta.get("playback_done")) is int and meta["playback_done"] >= played:
+        return
+    meta["playback_done"] = played
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    except OSError:
+        pass
 
 
 # Segment files are 001.mp3 (URL speaks) or 001_Narrator_01.mp3 (generated
@@ -436,14 +498,19 @@ class NarratorPipeline:
         combines them into combined.mp3 and deletes the individual files.
 
         If the archive already contains segment files (an earlier run was
-        interrupted), synthesis resumes from the first missing segment and the
-        existing ones are played as-is.
+        interrupted), synthesis resumes from the first missing segment, and
+        playback resumes after the last segment recorded as fully played
+        (metadata playback_done) instead of replaying from segment 1.
         """
         seg_dir = os.path.join(archive_dir, "segments")
         os.makedirs(seg_dir, exist_ok=True)
         existing = sorted(f for f in os.listdir(seg_dir) if is_segment_file(f))
+        playback_done = _get_playback_done(archive_dir)
         if existing:
-            log.info("Resuming %s from segment %d", speak_id, len(existing) + 1)
+            log.info(
+                "Resuming %s: synth from segment %d, playback from segment %d",
+                speak_id, len(existing) + 1, playback_done + 1,
+            )
         self.segments_done = len(existing)
         queue: asyncio.Queue[str] = asyncio.Queue()
         synth_done = asyncio.Event()
@@ -455,8 +522,10 @@ class NarratorPipeline:
                         break
                     seg_file = os.path.join(seg_dir, f"{i:03d}.mp3")
                     if os.path.exists(seg_file):
-                        # Already synthesized during an earlier run: play as-is.
-                        await queue.put(seg_file)
+                        # Already synthesized during an earlier run: only queue
+                        # segments that were never fully played.
+                        if i > playback_done:
+                            await queue.put(seg_file)
                         self.segments_done = i
                         continue
                     tone_ms = settings.playback_delay_ms if i == 1 else settings.sentence_padding_ms
@@ -480,6 +549,10 @@ class NarratorPipeline:
                     continue
                 self.state = "playing"
                 await self._play_file(seg_file)
+                if not self._stop_requested:
+                    # Advance the resume point only after a full play; a
+                    # stopped/killed segment is replayed on the next run.
+                    _set_playback_done(archive_dir, int(os.path.basename(seg_file)[:3]))
             log.info("Playback finished for %s", speak_id)
 
         producer_task = asyncio.create_task(producer())

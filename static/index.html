@@ -3,24 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="theme-color" content="#1a1a1a">
-    <title>Edge-TTS Web UI</title>
+    <meta name="theme-color" content="#f5f7fa">
+    <title>TTS</title>
     <style>
         :root {
-            --bg-primary: #0f0f0f;
-            --bg-secondary: #1a1a1a;
-            --bg-card: #242424;
-            --accent: #4a9eff;
-            --accent-hover: #5fa3ff;
-            --text-primary: #ffffff;
-            --text-secondary: #b3b3b3;
-            --border: #333333;
-            --success: #4caf50;
-            --danger: #f44336;
+            --bg-primary: #f5f7fa;
+            --bg-secondary: #f5f7fa;
+            --bg-card: #ffffff;
+            --accent: #2e7d32;
+            --accent-hover: #1b5e20;
+            --text-primary: #212121;
+            --text-secondary: #757575;
+            --border: #cfd8dc;
+            --success: #2e7d32;
+            --danger: #c62828;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
             background: var(--bg-primary);
             color: var(--text-primary);
             line-height: 1.6;
@@ -36,19 +36,13 @@
         }
         header {
             display: flex;
+            justify-content: flex-end;
             align-items: center;
-            justify-content: center;
+            gap: 8px;
             position: relative;
             padding: 8px 0;
         }
-        .header-title {
-            text-align: center;
-        }
         .header-actions {
-            position: absolute;
-            right: 0;
-            top: 50%;
-            transform: translateY(-50%);
             display: flex;
             gap: 8px;
         }
@@ -82,10 +76,7 @@
             height: 18px;
         }
         .header-status {
-            position: absolute;
-            left: 0;
-            top: 50%;
-            transform: translateY(-50%);
+            position: relative;
             display: flex;
             gap: 8px;
         }
@@ -109,19 +100,11 @@
             color: var(--text-secondary);
             border-color: var(--border);
         }
-        h1 {
-            font-size: clamp(20px, 5vw, 28px);
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-        .subtitle {
-            color: var(--text-secondary);
-            font-size: clamp(12px, 3vw, 14px);
-        }
         .card {
             background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
+            border: 1px solid #e8eaed;
+            border-radius: 16px;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
             padding: 16px;
             display: flex;
             flex-direction: column;
@@ -139,38 +122,87 @@
         }
         .tabs {
             display: flex;
-            background: var(--bg-secondary);
-            border-radius: 8px;
-            padding: 4px;
-            gap: 4px;
+            gap: 0;
+            border-bottom: 2px solid var(--border);
         }
         .tab {
             flex: 1;
-            padding: 8px 12px;
+            padding: 10px 16px;
             border: none;
+            border-bottom: 3px solid transparent;
+            border-radius: 8px 8px 0 0;
             background: transparent;
             color: var(--text-secondary);
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 500;
+            font-size: 15px;
+            font-weight: 600;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
             -webkit-tap-highlight-color: transparent;
         }
+        .tab:hover {
+            background: #eee;
+        }
         .tab.active {
-            background: var(--accent);
-            color: white;
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border-bottom-color: var(--accent);
+        }
+        .card-tabbed {
+            flex-direction: row;
+        }
+        .tab-content {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .tabs.vertical {
+            flex: 0 0 auto;
+            flex-direction: column;
+            gap: 4px;
+            align-self: stretch;
+            border-bottom: none;
+            border-right: 2px solid var(--border);
+        }
+        .tabs.vertical .tab {
+            flex: 0 0 auto;
+            border-bottom: none;
+            border-right: 3px solid transparent;
+            border-radius: 8px 0 0 8px;
+            padding: 10px 14px;
+            text-align: center;
+            min-width: 0;
+        }
+        .tabs.vertical .tab.active {
+            border-right-color: var(--accent);
+        }
+        .tab-panels {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        #analyze-panel {
+            flex-direction: column;
+            gap: 12px;
         }
         textarea, input[type="url"], select {
             width: 100%;
             background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 8px;
+            border: 2px solid var(--border);
+            border-radius: 10px;
             color: var(--text-primary);
             padding: 12px;
             font-size: 16px;
             font-family: inherit;
             resize: vertical;
+            transition: border-color 0.15s;
+        }
+        textarea:focus, input[type="url"]:focus, select:focus {
+            border-color: var(--accent);
+            outline: none;
         }
         textarea {
             min-height: 120px;
@@ -178,7 +210,7 @@
         }
         select {
             appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23b3b3b3' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23757575' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
             background-repeat: no-repeat;
             background-position: right 12px center;
             padding-right: 36px;
@@ -205,7 +237,8 @@
             border: none;
             border-radius: 10px;
             font-size: 16px;
-            font-weight: 600;
+            font-weight: 700;
+            letter-spacing: 0.3px;
             cursor: pointer;
             transition: all 0.2s;
             -webkit-tap-highlight-color: transparent;
@@ -219,18 +252,18 @@
             background: var(--accent-hover);
         }
         .btn-primary:disabled {
-            background: #555;
+            background: var(--accent);
             cursor: not-allowed;
-            opacity: 0.5;
+            opacity: 0.65;
         }
         .btn-danger {
             background: var(--danger);
             color: white;
         }
         .btn-secondary {
-            background: var(--bg-secondary);
+            background: var(--bg-card);
             color: var(--text-primary);
-            border: 1px solid var(--border);
+            border: 2px solid var(--border);
         }
         .status {
             display: flex;
@@ -266,13 +299,6 @@
             display: none;
             width: 100%;
         }
-        .footer {
-            text-align: center;
-            color: var(--text-secondary);
-            font-size: 12px;
-            margin-top: auto;
-            padding: 8px;
-        }
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.6; }
@@ -283,7 +309,7 @@
         .modal-overlay {
             position: fixed;
             inset: 0;
-            background: rgba(0, 0, 0, 0.6);
+            background: rgba(0, 0, 0, 0.45);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -334,7 +360,7 @@
         .bt-tooltip {
             position: absolute;
             top: calc(100% + 8px);
-            left: 0;
+            right: 0;
             background: var(--bg-card);
             border: 1px solid var(--border);
             border-radius: 8px;
@@ -342,7 +368,7 @@
             font-size: 12px;
             white-space: nowrap;
             z-index: 100;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             display: none;
             pointer-events: none;
         }
@@ -430,15 +456,15 @@
             border-radius: 10px;
         }
         .bt-badge.connected {
-            background: rgba(76, 175, 80, 0.2);
+            background: #e8f5e9;
             color: var(--success);
         }
         .bt-badge.paired {
-            background: rgba(74, 158, 255, 0.2);
-            color: var(--accent);
+            background: #e3f2fd;
+            color: #0d47a1;
         }
         .bt-badge.discovered {
-            background: rgba(179, 179, 179, 0.2);
+            background: #eeeeee;
             color: var(--text-secondary);
         }
         .bt-connect-btn {
@@ -464,6 +490,21 @@
             min-width: 70px;
             text-align: right;
         }
+        .mute-btn {
+            flex: 0 0 auto;
+            border-radius: 50%;
+        }
+        .mute-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .mute-btn .icon-muted { display: none; }
+        .mute-btn.muted {
+            color: var(--danger);
+            border-color: var(--danger);
+        }
+        .mute-btn.muted .icon-sound { display: none; }
+        .mute-btn.muted .icon-muted { display: block; }
         .battery-low {
             color: var(--danger);
             font-weight: 600;
@@ -551,10 +592,6 @@
                     <div class="tt-status">Checking...</div>
                 </div>
             </div>
-            <div class="header-title">
-                <h1>Edge-TTS Web UI</h1>
-                <p class="subtitle">Text-to-Speech with Microsoft Edge Voices</p>
-            </div>
             <div class="header-actions">
                 <button id="bt-settings-btn" class="icon-btn" title="Bluetooth Settings" aria-label="Bluetooth Settings">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -577,65 +614,76 @@
             </div>
         </header>
 
-        <div class="card">
-            <div class="input-group">
-                <label>Input Type</label>
-                <div class="tabs">
-                    <button class="tab active" data-tab="url">URL</button>
-                    <button id="stories-tab" class="tab">Stories</button>
-                </div>
+        <div class="card card-tabbed">
+            <div class="tabs vertical">
+                <button class="tab active" data-tab="url">URL</button>
+                <button id="stories-tab" class="tab">Stories</button>
+                <button id="analyze-tab" class="tab">Analyze</button>
             </div>
+            <div class="tab-content">
+                <div class="input-group">
+                    <label>Input Type</label>
+                    <div class="tab-panels">
+                        <div id="url-input" class="input-group">
+                            <div style="display: flex; gap: 16px; margin-bottom: 8px;">
+                                <label style="display: flex; align-items: center; gap: 6px; font-size: 14px;">
+                                    <input type="radio" name="input-mode" value="url" checked> URL
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 6px; font-size: 14px;">
+                                    <input type="radio" name="input-mode" value="text"> Text
+                                </label>
+                            </div>
+                            <div id="url-field">
+                                <label for="url">URL to Extract Text From</label>
+                                <input type="url" id="url" placeholder="https://example.com/article">
+                            </div>
+                            <div id="text-field" style="display: none;">
+                                <label for="text">Text to Speak</label>
+                                <textarea id="text" placeholder="Enter text here..."></textarea>
+                                <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary);">
+                                    <span id="char-count">0 characters</span>
+                                    <span>Max 50,000</span>
+                                </div>
+                            </div>
+                        </div>
 
-            <div id="url-input" class="input-group">
-                <div style="display: flex; gap: 16px; margin-bottom: 8px;">
-                    <label style="display: flex; align-items: center; gap: 6px; font-size: 14px;">
-                        <input type="radio" name="input-mode" value="url" checked> URL
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 6px; font-size: 14px;">
-                        <input type="radio" name="input-mode" value="text"> Text
-                    </label>
-                </div>
-                <div id="url-field">
-                    <label for="url">URL to Extract Text From</label>
-                    <input type="url" id="url" placeholder="https://example.com/article">
-                </div>
-                <div id="text-field" style="display: none;">
-                    <label for="text">Text to Speak</label>
-                    <textarea id="text" placeholder="Enter text here..."></textarea>
-                    <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary);">
-                        <span id="char-count">0 characters</span>
-                        <span>Max 50,000</span>
+
+                        <div id="stories-panel" style="display: none;">
+                            <div class="card">
+                                <h2>Saved Stories</h2>
+                                <div id="stories-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+                            </div>
+                        </div>
+
+
+                        <div id="analyze-panel" style="display: none;">
+                            <div class="voice-info">Uses the URL / Text from the URL tab</div>
+                            <button id="story-analyze-btn" class="btn-secondary">Analyze Story</button>
+                            <div id="story-preview" class="story-preview" style="display: none;">
+                                <h3>Story Plan</h3>
+                                <div class="input-group">
+                                    <label for="story-name-input">Story Name</label>
+                                    <input type="text" id="story-name-input" />
+                                </div>
+                                <div id="story-roles"></div>
+                                <div id="story-seg-count" style="font-size: 13px; color: var(--text-secondary);"></div>
+                                <div class="progress-wrap"><div id="story-progress" class="progress-bar"></div></div>
+                                <div id="story-progress-text" style="font-size: 12px; color: var(--text-secondary);"></div>
+                                <button id="story-generate-btn" class="btn-primary">Generate</button>
+                            </div>
+
+                        </div>
                     </div>
                 </div>
-                <button id="story-analyze-btn" class="btn-secondary" style="margin-top: 8px;">Analyze Story</button>
-            </div>
 
-            <div id="stories-panel" style="display: none;">
-                <div class="card">
-                    <h2>Saved Stories</h2>
-                    <div id="stories-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+                <div class="input-group" id="voice-section">
+                    <label for="voice-search">Search Voices</label>
+                    <input type="text" id="voice-search" class="voice-search" placeholder="Search by name, locale, or language...">
+                    <label for="voice">Voice</label>
+                    <select id="voice"></select>
+                    <div id="voice-info" class="voice-info"></div>
                 </div>
-            </div>
 
-            <div id="story-preview" class="story-preview" style="display: none;">
-                <h3>Story Plan</h3>
-                <div class="input-group">
-                    <label for="story-name-input">Story Name</label>
-                    <input type="text" id="story-name-input" />
-                </div>
-                <div id="story-roles"></div>
-                <div id="story-seg-count" style="font-size: 13px; color: var(--text-secondary);"></div>
-                <div class="progress-wrap"><div id="story-progress" class="progress-bar"></div></div>
-                <div id="story-progress-text" style="font-size: 12px; color: var(--text-secondary);"></div>
-                <button id="story-generate-btn" class="btn-primary">Generate</button>
-            </div>
-
-            <div class="input-group" id="voice-section">
-                <label for="voice-search">Search Voices</label>
-                <input type="text" id="voice-search" class="voice-search" placeholder="Search by name, locale, or language...">
-                <label for="voice">Voice</label>
-                <select id="voice"></select>
-                <div id="voice-info" class="voice-info"></div>
             </div>
         </div>
 
@@ -649,7 +697,18 @@
                     <span id="speaker-volume-pct" class="speaker-value">--</span>
                 </div>
                 <div class="speaker-row">
-                    <button id="speaker-mute-btn" class="btn-secondary" disabled>Mute</button>
+                    <button id="speaker-mute-btn" class="icon-btn mute-btn" disabled aria-label="Mute speaker">
+                        <svg class="icon-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                        </svg>
+                        <svg class="icon-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                            <line x1="23" y1="9" x2="17" y2="15"/>
+                            <line x1="17" y1="9" x2="23" y2="15"/>
+                        </svg>
+                    </button>
                     <span id="speaker-battery" class="speaker-value">Battery: --</span>
                 </div>
             </div>
@@ -679,9 +738,6 @@
             <audio id="audio-player" class="audio-player" controls></audio>
         </div>
 
-        <div class="footer">
-            Edge-TTS Web UI • Optimized for Mobile
-        </div>
     </div>
 
     <div id="confirm-modal" class="modal-overlay" style="display: none;">
@@ -899,8 +955,8 @@
             if (device.mac.toUpperCase() === currentDefaultMac) {
                 const def = document.createElement('span');
                 def.className = 'bt-badge';
-                def.style.background = 'rgba(255, 193, 7, 0.2)';
-                def.style.color = '#ffc107';
+                def.style.background = '#fff3e0';
+                def.style.color = '#e65100';
                 def.textContent = 'System Default';
                 row.appendChild(def);
             }
@@ -987,6 +1043,10 @@
         const speakerVolume = document.getElementById('speaker-volume');
         const speakerVolumePct = document.getElementById('speaker-volume-pct');
         const speakerMuteBtn = document.getElementById('speaker-mute-btn');
+        function setMuteState(muted) {
+            speakerMuteBtn.classList.toggle('muted', muted);
+            speakerMuteBtn.setAttribute('aria-label', muted ? 'Unmute speaker' : 'Mute speaker');
+        }
         const speakerBattery = document.getElementById('speaker-battery');
         let volumeDebounce = null;
         let speakerDragging = false;
@@ -1000,7 +1060,7 @@
                     speakerVolume.disabled = true;
                     speakerVolumePct.textContent = '--';
                     speakerMuteBtn.disabled = true;
-                    speakerMuteBtn.textContent = 'Mute';
+                    setMuteState(false);
                     speakerBattery.textContent = 'Battery: --';
                     speakerBattery.classList.remove('battery-low');
                     return;
@@ -1020,8 +1080,7 @@
                     speakerVolumePct.textContent = '--';
                 }
                 speakerMuteBtn.disabled = false;
-                speakerMuteBtn.textContent = data.muted ? 'Unmute' : 'Mute';
-                speakerMuteBtn.classList.toggle('btn-danger', !!data.muted);
+                setMuteState(!!data.muted);
                 speakerBattery.textContent = (data.battery !== null && data.battery !== undefined)
                     ? `Battery: ${data.battery}%`
                     : 'Battery: N/A';
@@ -1057,7 +1116,7 @@
         });
 
         speakerMuteBtn.addEventListener('click', async () => {
-            const muted = speakerMuteBtn.textContent === 'Mute';
+            const muted = !speakerMuteBtn.classList.contains('muted');
             try {
                 const res = await fetch('/api/speaker/mute', {
                     method: 'POST',
@@ -1065,8 +1124,7 @@
                     body: JSON.stringify({ muted })
                 });
                 if (res.ok) {
-                    speakerMuteBtn.textContent = muted ? 'Unmute' : 'Mute';
-                    speakerMuteBtn.classList.toggle('btn-danger', muted);
+                    setMuteState(muted);
                 }
             } catch (err) {
                 console.error('Mute failed:', err);
@@ -1079,8 +1137,10 @@
         urlTab.addEventListener('click', () => {
             urlTab.classList.add('active');
             storiesTab.classList.remove('active');
+            analyzeTab.classList.remove('active');
             urlInput.style.display = 'flex';
             storiesPanel.style.display = 'none';
+            analyzePanel.style.display = 'none';
             voiceSection.style.display = 'flex';
         });
 
@@ -1201,23 +1261,28 @@
         });
 
         stopBtn.addEventListener('click', async () => {
+            // Stop polling FIRST: otherwise a status reply computed before
+            // the stop can land after resetUI() and re-show "Playing...".
+            stopStatusPolling();
             try {
                 await fetch('/api/stop', { method: 'POST' });
-                if (generating) {
-                    // pollStoryTask will see 'cancelled' and re-enable buttons
-                    return;
-                }
-                stopStatusPolling();
-                resetUI();
             } catch (err) {
                 console.error(err);
+            }
+            if (!generating) {
+                resetUI();
             }
         });
 
         async function fetchStatus() {
+            const run = statusInterval;
             try {
                 const res = await fetch('/api/status');
                 const data = await res.json();
+                // Drop stale replies: if polling was stopped (or restarted)
+                // while this request was in flight, its pre-stop state must
+                // not overwrite the reset UI.
+                if (statusInterval !== run) return;
                 statusValue.textContent = data.state.charAt(0).toUpperCase() + data.state.slice(1);
                 if (data.state === 'playing') {
                     statusValue.style.color = 'var(--success)';
@@ -1231,10 +1296,13 @@
 
                 if (data.state === 'idle') {
                     stopStatusPolling();
-                    // Try to load audio if we have speak_id
-                    if (currentSpeakId) {
+                    // Capture before setTimeout: resetUI() below nulls
+                    // currentSpeakId synchronously, which would build
+                    // /api/download/null.mp3 when the timeout fires.
+                    const id = currentSpeakId;
+                    if (id) {
                         setTimeout(() => {
-                            audioPlayer.src = `/api/download/${currentSpeakId}.mp3`;
+                            audioPlayer.src = `/api/download/${id}.mp3`;
                             audioPlayer.style.display = 'block';
                             audioPlayer.load();
                         }, 500);
@@ -1274,6 +1342,8 @@
 
         const storiesTab = document.getElementById('stories-tab');
         const storiesPanel = document.getElementById('stories-panel');
+        const analyzeTab = document.getElementById('analyze-tab');
+        const analyzePanel = document.getElementById('analyze-panel');
         const storiesList = document.getElementById('stories-list');
         const voiceSection = document.getElementById('voice-section');
         const storyPreview = document.getElementById('story-preview');
@@ -1292,10 +1362,22 @@
         storiesTab.addEventListener('click', () => {
             storiesTab.classList.add('active');
             urlTab.classList.remove('active');
+            analyzeTab.classList.remove('active');
             urlInput.style.display = 'none';
             storiesPanel.style.display = 'flex';
+            analyzePanel.style.display = 'none';
             voiceSection.style.display = 'none';
             loadStories();
+        });
+
+        analyzeTab.addEventListener('click', () => {
+            analyzeTab.classList.add('active');
+            urlTab.classList.remove('active');
+            storiesTab.classList.remove('active');
+            urlInput.style.display = 'none';
+            storiesPanel.style.display = 'none';
+            analyzePanel.style.display = 'flex';
+            voiceSection.style.display = 'none';
         });
 
         storyAnalyzeBtn.addEventListener('click', async () => {
@@ -1374,11 +1456,19 @@
         });
 
         async function pollStoryTask(taskId) {
+            let failures = 0;
             while (true) {
                 const res = await fetch(`/api/story/status/${taskId}`);
                 if (!res.ok) {
-                    throw new Error(`Status check failed (${res.status})`);
+                    // Transient errors (restart, blip): retry before giving up.
+                    failures += 1;
+                    if (failures >= 3) {
+                        throw new Error(`Status check failed (${res.status})`);
+                    }
+                    await new Promise(r => setTimeout(r, 2000));
+                    continue;
                 }
+                failures = 0;
                 const t = await res.json();
                 if (t.total > 0) {
                     storyProgress.style.width = `${Math.round((t.done / t.total) * 100)}%`;

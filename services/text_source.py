@@ -3,46 +3,10 @@ from __future__ import annotations
 import io
 import re
 import zipfile
+from collections import Counter
 
 import httpx
 from bs4 import BeautifulSoup
-
-# Section headings to remove (normalized: lowercase, letters only).
-REMOVE_SECTIONS = {
-    "contents",
-    "tableofcontents",
-    "listofcontents",
-    "illustrations",
-    "listofillustrations",
-    "preface",
-}
-
-# Contents-list entries: "CHAPTER I. Title" style lines (number + title on one line).
-LIST_ENTRY_RE = re.compile(
-    r"^(?:CHAPTER|PART|BOOK|SECTION)\s+(?:[IVXLCDM]+|\d+)\s*\.?\s+\S",
-    re.IGNORECASE,
-)
-# Contents-list entries without a keyword: "I.—A SCANDAL IN BOHEMIA 3", "1. Title".
-NUMBERED_ENTRY_RE = re.compile(r"^(?:[IVXLCDM]+|\d+)\s*[.)]\s*[—–-]*\s*\S")
-
-# Table-of-contents headings (the section whose first entry names the first chapter).
-CONTENTS_SECTIONS = {"contents", "tableofcontents", "listofcontents"}
-# Column headers that may precede the first real contents entry.
-_CONTENTS_COLUMN_HEADERS = {"page", "pages", "chapter", "chap", "no", "pageno", "chapterpage"}
-# Leading chapter numbering of a contents entry / body heading: "I.—", "CHAPTER I.", "1.".
-_ENTRY_PREFIX_RE = re.compile(
-    r"^(?:(?:chapter|part|book|section|adventure|story)\s+)?(?P<num>[ivxlcdm]+|\d+)\b\s*[.:)—–-]*\s*",
-    re.IGNORECASE,
-)
-# Trailing page number of a contents entry: "A SCANDAL IN BOHEMIA     3".
-_PAGE_SUFFIX_RE = re.compile(r"\s+\d+\s*$")
-# A bare chapter number line ("I", "I.", "12") under a chapter title.
-_BARE_NUMBER_RE = re.compile(r"^(?:[IVXLCDM]+|\d+)\.?$")
-# A keyword + number line with no title ("CHAPTER I.", "Adventure 2").
-_KEYWORD_NUMBER_RE = re.compile(
-    r"^(?:chapter|part|book|section|adventure|story)\s+(?:[ivxlcdm]+|\d+)\.?$",
-    re.IGNORECASE,
-)
 
 START_MARKER_RE = re.compile(
     r"\*\*\* START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK[^\n]*\n",
@@ -54,24 +18,11 @@ END_MARKER_RE = re.compile(
 )
 CAPTION_RE = re.compile(r"(?m)^\s*\[[^\]]*\]\s*$")
 
-# Chapter-style headings ("CHAPTER I.", "Chapter 1", "PART ONE", "Adventure II", ...).
-# The keyword must be followed by a chapter number (roman, arabic or a number
-# word) so ordinary prose lines starting with "part of ..." / "book that ..."
-# are not mistaken for headings.
-_NUMBER_WORDS = (
-    "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|"
-    "fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|"
-    "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last"
-)
-CHAPTER_HEADING_RE = re.compile(
-    rf"^(?:chapter|part|book|section|adventure)\s+(?:[ivxlcdm]+|\d+|(?:the\s+)?(?:{_NUMBER_WORDS}))\b",
-    re.IGNORECASE,
-)
 # If front-matter removal keeps less than this fraction of the text AND
-# discards more text than any plausible contents/preface section, the
-# heuristics misfired (e.g. a book with no CHAPTER headings); fall back
-# rather than narrate an empty book. Small all-front-matter slices (as
-# produced by the story narrator) are still legitimately emptied.
+# discards more text than any plausible front matter, the structural cut
+# misfired (e.g. the body was never located); fall back rather than narrate
+# an empty book. Small all-front-matter slices (as produced by the story
+# narrator) are still legitimately emptied.
 _MIN_KEEP_RATIO = 0.05
 _MAX_FRONT_MATTER_CHARS = 20_000
 
@@ -105,257 +56,321 @@ def strip_gutenberg_boilerplate(text: str) -> str:
     return text
 
 
-def _is_heading(line: str) -> bool:
-    """True if the line looks like a section heading (short, all-caps or title-case)."""
-    s = line.strip()
-    if not s or len(s) > 80:
-        return False
-    cleaned_s = s.rstrip(".:?!")
-    normalized_cleaned = re.sub(r"[^a-z]", "", cleaned_s.lower())
-    if normalized_cleaned in REMOVE_SECTIONS or normalized_cleaned.startswith("preface"):
-        return True
-    # Reject sentence-ending punctuation, except "CHAPTER I." style headings.
-    if s.endswith((".", "!", "?")) and not (
-        s.endswith(".") and re.fullmatch(r"\S+\s+\S+\.", s) and CHAPTER_HEADING_RE.match(s)
-    ):
-        return False
-    if s.isupper():
-        return True
-    words = s.split()
-    capitalized = sum(1 for word in words if word[:1].isupper())
-    return capitalized >= max(1, len(words) - 1)
+# --- Structural front-matter detection (ported from preaudio.py) ------------
+# Detection is structural, not name based: the body starts at the first
+# heading belonging to the document's dominant repeating heading pattern --
+# the chapter/part/section skeleton -- which is what a real book structure
+# looks like in every Gutenberg edition regardless of how its headings are
+# spelled. Ported from preaudio.py (kept standalone and stdlib-only there).
+
+# A line of asterisks, dashes, underscores, equals signs or dots is an
+# ornament (section break, rule), never a heading.
+DECORATION_RE = re.compile(r"^[\s*+=~_.\-]{3,}$")
+# A single trailing dot after a lone letter or digit is numbering punctuation
+# ("IV.", "12."); the same dot after a word is sentence punctuation.
+TRAILING_NUMERAL_DOT_RE = re.compile(r"(?:\b[A-Za-z]|\d)\.$")
+# Punctuation that means the line runs on into a sentence.
+TRAILING_CONTINUATION_RE = re.compile(r"[,;:!?—’”]+$")
+ALPHA_RE = re.compile(r"[A-Za-z]")
+TOKEN_RE = re.compile(r"[a-z0-9]+")
+NUMERIC_TOKEN_RE = re.compile(r"^(?:[ivxlcdm]+|\d+)$")
+# The closing line of a story, alone on its line. Books that end this way
+# often carry publisher advertising after it, which is not narration.
+# Matched optionally decorated ("*** THE END ***", "THE END.").
+ENDING_RE = re.compile(
+    r"(?im)^[ \t]*(?:[*_~=\s]*)(?:the\s+end|fin)\b[^\n]*$",
+)
+
+# A numbered heading line: a single space then UPPERCASE roman numeral or
+# digits, followed by end/period/blank or a title ("CHAPTER I. Y-o-u-u
+# Tom...", "ACT IV", "Letter 1"). The strict shape rejects prose such as
+# "contains 2,000...", "the 18th Brumaire" or index lines padded with
+# spaces ("Ruskin       156. Charing").
+NUMBERED_HEADING_RE = re.compile(
+    r"^\s*([A-Za-z][A-Za-z'\u2019\-]*)\s([IVXLCDM]+|\d+)(?=$|\.|\s*$|\s+[A-Z0-9])",
+)
+# When the second numbered heading appears this close after the first, the
+# first one belongs to a contents listing, not to the body.
+CONTENTS_GAP_LINES = 15
+
+MAX_HEADING_CHARS = 80
+MAX_HEADING_BLOCK_LINES = 3
+MIN_PROSE_CHARS = 40
+# How far past a heading to look for the prose it introduces. A chapter may
+# open with short dialogue ("Tom!" / "No answer.") before the first long
+# line, so the first non-blank line alone is not proof of narration.
+PROSE_SCAN_LINES = 15
+MIN_REPEATS = 2
+# Only the last few blocks of a heading run can be a real section opener.
+MAX_RUN_BLOCKS = 8
+MIN_LISTING_CHAIN = 8
+LISTING_SHARE = 0.5
+# A closing line this far into the text is the end of the story, not prose.
+ENDING_SEARCH_SHARE = 0.9
 
 
-def _section_name(line: str) -> str | None:
-    """Normalized name of a removable section heading, or None."""
-    s = line.strip()
-    if not s or len(s) > 80:
+def is_ornament(line: str) -> bool:
+    """True for decorative rules and lines carrying too little text."""
+    stripped = line.strip()
+    return bool(DECORATION_RE.match(stripped)) or len(ALPHA_RE.findall(stripped)) < 3
+
+
+def is_heading_line(line: str) -> bool:
+    """True if a single line could be a heading rather than running prose."""
+    stripped = line.strip()
+    if not stripped or len(stripped) > MAX_HEADING_CHARS:
+        return False
+    if is_ornament(stripped):
+        return False
+    if stripped.endswith("."):
+        # A period is only tolerated as numbering punctuation ("IV.", "12.").
+        # Any other full stop means the line runs on as prose.
+        if not TRAILING_NUMERAL_DOT_RE.search(stripped):
+            return False
+        stripped = stripped[:-1].rstrip()
+    return not TRAILING_CONTINUATION_RE.search(stripped)
+
+
+def is_heading_block(block: list[str]) -> bool:
+    """True if a blank-line delimited block is short enough to be headings."""
+    if not block or len(block) > MAX_HEADING_BLOCK_LINES:
+        return False
+    return all(is_heading_line(line) for line in block)
+
+
+def is_prose(lines: list[str], start: int) -> bool:
+    """True if real prose appears within the window at/after start.
+
+    The check scans a bounded window rather than only the first non-blank
+    line: dialogue-driven chapters (pg74 opens with "Tom!" / "No answer.")
+    lead with short lines before any line long enough to be narration.
+    """
+    for line in lines[start:start + PROSE_SCAN_LINES]:
+        if len(line.strip()) >= MIN_PROSE_CHARS:
+            return True
+    return False
+
+
+def shape_key(line: str) -> str:
+    """Normalised shape of a heading: numbers and numerals collapse to '#'."""
+    tokens = TOKEN_RE.findall(line.lower())
+    return " ".join("#" if NUMERIC_TOKEN_RE.match(t) else t for t in tokens)
+
+
+def split_blocks(lines: list[str]) -> list[tuple[int, list[str]]]:
+    """Group lines into blank-line delimited (start_index, block) pairs."""
+    blocks: list[tuple[int, list[str]]] = []
+    current: list[str] = []
+    start = 0
+    for index, line in enumerate(lines):
+        if line.strip():
+            if not current:
+                start = index
+            current.append(line)
+        elif current:
+            blocks.append((start, current))
+            current = []
+    if current:
+        blocks.append((start, current))
+    return blocks
+
+
+def heading_blocks(lines: list[str]) -> tuple[list[tuple[int, list[str]]], list[str | None]]:
+    """Classify every blank-line delimited block as heading or not."""
+    blocks = split_blocks(lines)
+    keys: list[str | None] = [
+        shape_key(block[0]) if is_heading_block(block) else None
+        for _, block in blocks
+    ]
+    return blocks, keys
+
+
+def block_chains(qualifying: list[bool]) -> list[list[int]]:
+    """Group block indices into maximal runs of consecutive heading blocks."""
+    chains: list[list[int]] = []
+    current: list[int] = []
+    for index, qualifies in enumerate(qualifying):
+        if qualifies:
+            current.append(index)
+            continue
+        if current:
+            chains.append(current)
+            current = []
+    if current:
+        chains.append(current)
+    return chains
+
+
+def listing_prefix(key: str) -> str:
+    """Shape prefix that groups contents entries of one numbered series.
+
+    Contents entries carry chapter/act titles ("chapter # y o u u tom ...")
+    while the body heading is bare ("chapter #"); collapsing numbered keys
+    to their first two tokens lets both count as the same repeating shape.
+    Non-numbered keys stay whole so prose-like chains are unaffected.
+    """
+    tokens = key.split()
+    if len(tokens) >= 2 and tokens[1] == "#":
+        return " ".join(tokens[:2])
+    return key
+
+
+def is_contents_listing(chain: list[int], keys: list[str | None]) -> bool:
+    """True if a heading chain looks like a table of contents / illustration list.
+
+    Such a chain is long and its entries share one repeating shape, e.g. every
+    entry collapsing to the key "chapter #" -- with or without trailing
+    chapter titles. Prose front matter is too short to form a chain, and a
+    numbered footnote list mixes shapes, so neither is mistaken for a listing.
+    """
+    shapes = [keys[index] for index in chain if keys[index]]
+    if not shapes:
+        return False
+    prefixes = [listing_prefix(key) for key in shapes]
+    dominant = Counter(prefixes).most_common(1)[0][1]
+    return dominant / len(prefixes) >= LISTING_SHARE
+
+
+def find_contents_body_start(lines: list[str]) -> int | None:
+    """Anchor the body via the contents listing (second-occurrence rule).
+
+    Books print a contents listing before the body: the first numbered
+    heading line belongs to it, and the body is the second occurrence of
+    that same heading ("CHAPTER I" in the contents -> the next "CHAPTER I"
+    is the body). A same-series heading within CONTENTS_GAP_LINES marks the
+    listing; scenes following a body "ACT I" are a different series and do
+    not count, so contents-less books fall through to the structural scan.
+    """
+    numbered: list[tuple[int, str, str]] = []
+    for index, line in enumerate(lines):
+        match = NUMBERED_HEADING_RE.match(line)
+        if not match:
+            continue
+        numbered.append((index, match.group(1).lower(), match.group(2).lower()))
+    if not numbered:
         return None
-    normalized = re.sub(r"[^a-z]", "", s.lower().rstrip(".:?!"))
-    if normalized in REMOVE_SECTIONS or normalized.startswith("preface"):
-        if _is_heading(line):
-            return normalized
-        # Period-ending headings like "PREFACE." / "List of Illustrations."
-        # (common in Gutenberg HTML) are rejected by _is_heading; accept short
-        # heading-like lines ending in punctuation instead.
-        if len(s) <= 30 and s.endswith((".", ":")):
-            return normalized
+
+    first_index, first_word, first_numeral = numbered[0]
+    in_listing = any(
+        word == first_word and index - first_index <= CONTENTS_GAP_LINES
+        for index, word, _ in numbered[1:]
+    )
+    if not in_listing:
+        # First heading is the body's own ("ACT I" + "Scene I" + prose);
+        # require narration to follow so a dangling heading is not anchored.
+        return first_index if is_prose(lines, first_index + 1) else None
+    for index, word, numeral in numbered[1:]:
+        if word == first_word and numeral == first_numeral:
+            return index
     return None
 
 
-def _is_list_entry(line: str) -> bool:
-    """True if the line looks like a table-of-contents entry."""
-    s = line.strip()
-    return bool(LIST_ENTRY_RE.match(s) or NUMBERED_ENTRY_RE.match(s))
+def find_body_start(lines: list[str]) -> int:
+    """Index of the first line of the story body.
 
-
-def _next_nonblank(lines: list[str], j: int) -> int:
-    while j < len(lines) and not lines[j].strip():
-        j += 1
-    return j
-
-
-def _is_followed_by_content(lines: list[str], index: int) -> bool:
-    """True if the heading at index is followed by real prose (the story body)."""
-    j = _next_nonblank(lines, index + 1)
-    if j >= len(lines):
-        return False
-
-    line_after = lines[j].strip()
-    if _is_list_entry(line_after) or _is_chapter_heading(line_after):
-        return False
-
-    # Skip up to two subtitle lines (e.g. "Down the Rabbit-Hole" under
-    # "CHAPTER I.", or "A SCANDAL IN BOHEMIA" + "I" under "Adventure I").
-    for _ in range(2):
-        if not (_is_heading(lines[j]) and len(lines[j].strip()) < 60):
-            break
-        j = _next_nonblank(lines, j + 1)
-        if j >= len(lines):
-            return False
-        sub_after = lines[j].strip()
-        if _is_list_entry(sub_after) or _is_chapter_heading(sub_after):
-            return False
-
-    upcoming_lines_checked = 0
-    scan_idx = j
-    while scan_idx < len(lines) and upcoming_lines_checked < 15:
-        curr = lines[scan_idx].strip()
-        if curr:
-            upcoming_lines_checked += 1
-            if _is_chapter_heading(curr):
-                return False
-        scan_idx += 1
-
-    return len(lines[j].strip()) >= 40
-
-
-def _is_chapter_heading(line: str) -> bool:
-    """True if the line looks like a chapter/part/book/section heading."""
-    s = line.strip()
-    return bool(CHAPTER_HEADING_RE.match(s)) and _is_heading(s)
-
-
-def _entry_key(line: str, strip_prefix: bool = True) -> str:
-    """Normalize a contents entry or heading so both spellings compare equal.
-
-    "I.—A SCANDAL IN BOHEMIA     3" and "A SCANDAL IN BOHEMIA" both become
-    "ascandalinbohemia".
+    The body begins at the second occurrence of the contents' first numbered
+    heading when a contents listing is present; otherwise at the first
+    structural heading whose shape recurs in the document -- the
+    chapter/part/book skeleton. Nothing here inspects what a heading is
+    spelled beyond its numbered shape, so it holds across editions.
     """
-    s = line.strip()
-    # Drop a trailing page number, unless the number is the chapter number
-    # itself ("Chapter 1").
-    if not _KEYWORD_NUMBER_RE.match(s):
-        s = _PAGE_SUFFIX_RE.sub("", s)
-    if strip_prefix:
-        s = _ENTRY_PREFIX_RE.sub("", s)
-    return re.sub(r"[^a-z0-9]", "", s.lower())
+    anchored = find_contents_body_start(lines)
+    if anchored is not None:
+        return anchored
+    blocks, keys = heading_blocks(lines)
+    qualifying = [key is not None for key in keys]
+    counts = Counter(key for key in keys if key)
+    chains = block_chains(qualifying)
+    owner = {index: chain for chain in chains for index in chain}
+
+    def leads_to_prose(chain: list[int]) -> bool:
+        """True if prose follows the last block of this heading run."""
+        tail = chain[-1] + 1
+        return tail < len(blocks) and is_prose(lines, blocks[tail][0])
+
+    def run_of(index: int) -> list[int]:
+        return owner.get(index, [index])
+
+    def tail_of(chain: list[int]) -> list[int]:
+        """Trim a run to its last few blocks.
+
+        A table of contents and the headings that follow it form one
+        unbroken run, so only its tail is a real section opener.
+        """
+        return chain[-MAX_RUN_BLOCKS:]
+
+    # Front-matter listings end where their last chain ends.
+    cutoff = -1
+    for chain in chains:
+        if len(chain) >= MIN_LISTING_CHAIN and is_contents_listing(chain, keys):
+            cutoff = max(cutoff, chain[-1])
+
+    def numbered(key: str | None) -> bool:
+        return bool(key) and "#" in key.split()
+
+    for index in range(max(cutoff, 0), len(blocks)):
+        key = keys[index]
+        if not numbered(key) or counts[key] < MIN_REPEATS:
+            continue
+        chain = tail_of(run_of(index))
+        if not leads_to_prose(chain):
+            continue
+        return blocks[index][0]
+
+    for chain in chains:
+        run = tail_of(chain)
+        if not leads_to_prose(run):
+            continue
+        for index in run:
+            if keys[index] and counts[keys[index]] >= MIN_REPEATS:
+                return blocks[index][0]
+
+    return 0
 
 
-def _entry_number(line: str) -> str | None:
-    """Chapter number at the start of a contents entry or heading ("i", "12"), or None."""
-    m = _ENTRY_PREFIX_RE.match(line.strip())
-    return m.group("num").lower() if m else None
+def find_ending(lines: list[str], start: int) -> int | None:
+    """Index of the story's closing line at or after start, or None.
 
-
-def _include_preceding_headings(lines: list[str], index: int, lower_bound: int, number: str | None) -> int:
-    """Walk back over number-only heading lines directly above a chapter title.
-
-    "Adventure I" above "A SCANDAL IN BOHEMIA", or "CHAPTER I." above "Down
-    the Rabbit-Hole", belong to the chapter. Lines carrying a title of their
-    own (e.g. a contents entry) are never crossed, and a matched line that
-    already starts with a number is taken as the heading itself.
+    Only a line in the last few percent of the body counts, so that a
+    chapter or sentence reading "the end of it" is not mistaken for the
+    end of the book. (preaudio.py adds `start + len * share` instead of
+    measuring the share of the body itself, which disables the search
+    whenever the body starts past ~10% of the lines -- this version is
+    identical on full-length books and also works on small texts.)
     """
-    if _ENTRY_PREFIX_RE.match(lines[index].strip()):
-        return index
-    start = index
-    steps = 0
-    k = index - 1
-    while k >= lower_bound and steps < 2:
-        s = lines[k].strip()
-        if not s:
-            k -= 1
-            continue
-        if (_KEYWORD_NUMBER_RE.match(s) or _BARE_NUMBER_RE.match(s)) and (
-            number is None or _entry_number(s) == number
-        ):
-            start = k
-            steps += 1
-            k -= 1
-            continue
-        break
-    return start
-
-
-def _find_body_start_from_contents(lines: list[str], contents_index: int) -> int | None:
-    """Locate the story start from the table of contents.
-
-    The first contents entry names the first chapter; its next occurrence in
-    the text is the chapter heading where reading starts. The occurrence is
-    a line whose only content is that title, compared ignoring case,
-    punctuation and any trailing page number. Only when no such line exists
-    is a numbered line accepted, and then only with the same chapter number
-    (so a later contents entry sharing the title is never chosen). Returns
-    that line index (extended to include a chapter-number line directly
-    above it), or None when no second occurrence exists.
-    """
-    j = _next_nonblank(lines, contents_index + 1)
-    while j < len(lines):
-        key = _entry_key(lines[j], strip_prefix=False)
-        if key and key not in _CONTENTS_COLUMN_HEADERS:
-            break
-        j = _next_nonblank(lines, j + 1)
-    if j >= len(lines):
-        return None
-    number = _entry_number(lines[j])
-    title_key = _entry_key(lines[j], strip_prefix=True)
-
-    # 1. A line holding nothing but the title (case-insensitive).
-    if len(title_key) >= 2:
-        for k in range(j + 1, len(lines)):
-            if lines[k].strip() and _entry_key(lines[k], strip_prefix=False) == title_key:
-                return _include_preceding_headings(lines, k, j + 1, number)
-
-    # 2. A numbered heading repeating the entry ("1. Title", "Chapter 1"),
-    #    with the same number: several chapters may share a title, and a
-    #    later contents entry must never be taken for the story start.
-    for strip_prefix in (True, False):
-        key = _entry_key(lines[j], strip_prefix)
-        if len(key) < 2:
-            continue
-        for k in range(j + 1, len(lines)):
-            if not lines[k].strip() or _entry_key(lines[k], strip_prefix) != key:
-                continue
-            candidate_number = _entry_number(lines[k])
-            if candidate_number is not None and number is not None and candidate_number != number:
-                continue
-            return _include_preceding_headings(lines, k, j + 1, number)
+    tail_start = start + int((len(lines) - start) * ENDING_SEARCH_SHARE)
+    for index in range(len(lines) - 1, tail_start - 1, -1):
+        if ENDING_RE.match(lines[index]):
+            return index
     return None
 
 
-def _is_body_start(lines: list[str], index: int, require_chapter: bool = False) -> bool:
-    """True if the line at index begins the story body."""
-    if not _is_heading(lines[index]):
-        return False
-    if _is_list_entry(lines[index]):
-        return False
-    if require_chapter and not _is_chapter_heading(lines[index]):
-        return False
-    return _is_followed_by_content(lines, index)
+def extract_story_body(text: str) -> str:
+    """Cut everything before the story body and after the closing line."""
+    lines = text.splitlines()
+    start = find_body_start(lines)
+    ending = find_ending(lines, start)
+    stop = len(lines) if ending is None else ending + 1
+    return "\n".join(lines[start:stop])
 
 
 def remove_front_matter(text: str) -> str:
-    """Remove CONTENTS / ILLUSTRATIONS / PREFACE sections, keeping the story body.
+    """Remove the front matter (and anything after THE END) from a text.
 
-    After a CONTENTS heading the first entry names the first chapter, and its
-    next occurrence in the text is where reading starts; everything in
-    between (contents list, illustrations, preface) is dropped. When no such
-    anchor is found, heading heuristics locate the body instead: when the
-    text contains chapter headings, front matter is skipped until a chapter
-    heading followed by prose (so preface bodies with heading-like
-    attribution lines are not mistaken for the story start).
+    The body start is found structurally -- the first heading whose shape
+    recurs through the document -- so title pages, dedications, contents
+    listings and prefaces are dropped no matter how they are titled. The
+    keep-ratio guard returns the input unchanged when the cut would discard
+    nearly everything (and more than _MAX_FRONT_MATTER_CHARS), so
+    structureless text (e.g. story-narrator slices) is never emptied by a
+    misfired cut.
     """
-    lines = text.splitlines()
-    has_chapter = any(
-        _is_chapter_heading(line) and _is_followed_by_content(lines, i)
-        for i, line in enumerate(lines)
-    )
-    total = sum(len(line.strip()) for line in lines)
-    for require_chapter in ([True, False] if has_chapter else [False]):
-        out = _strip_sections(lines, require_chapter)
-        kept = sum(len(line.strip()) for line in out)
-        dropped = total - kept
-        if kept >= total * _MIN_KEEP_RATIO or dropped <= _MAX_FRONT_MATTER_CHARS:
-            return "\n".join(out)
-    # Heuristics would have discarded (almost) the whole book: keep it as is.
+    out = extract_story_body(text)
+    kept = len(out)
+    total = len(text)
+    if kept >= total * _MIN_KEEP_RATIO or (total - kept) <= _MAX_FRONT_MATTER_CHARS:
+        return out
     return text
-
-
-def _strip_sections(lines: list[str], require_chapter: bool) -> list[str]:
-    """Drop removable sections, resuming at the first detected body start."""
-    out: list[str] = []
-    skipping = False
-    skip_until: int | None = None
-    for index, line in enumerate(lines):
-        if skip_until is not None:
-            if index < skip_until:
-                continue
-            skip_until = None
-            skipping = False
-        if not skipping:
-            name = _section_name(line)
-            if name:
-                skipping = True
-                if name in CONTENTS_SECTIONS:
-                    skip_until = _find_body_start_from_contents(lines, index)
-                continue
-        if skipping:
-            if _is_body_start(lines, index, require_chapter=require_chapter):
-                skipping = False
-            else:
-                continue
-        out.append(line)
-    return out
 
 
 def clean_whitespace(text: str) -> str:
@@ -391,10 +406,11 @@ def curate_text(text: str) -> str:
     """Curate a fetched URL text for audiobook narration.
 
     Sanitizes Gutenberg conventions (underscore-wrapped speech -> quotes),
-    strips the Gutenberg license boilerplate, removes front-matter sections
-    (CONTENTS / ILLUSTRATIONS / PREFACE), joins lines wrapped at the
-    ~70-char column limit, and cleans whitespace so only the story body
-    remains.
+    strips the Gutenberg license boilerplate, cuts to the story body using
+    structural heading detection (front matter before the first recurring
+    heading pattern, and publisher text after THE END, are dropped), joins
+    lines wrapped at the ~70-char column limit, and cleans whitespace so
+    only the narration text remains.
     """
     text = sanitize_text(text)
     text = strip_gutenberg_boilerplate(text)

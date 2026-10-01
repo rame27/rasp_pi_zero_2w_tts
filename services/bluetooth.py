@@ -16,6 +16,17 @@ log = logging.getLogger(__name__)
 
 _HISTORY_MAX = 20
 ASOUND_CONF = "/etc/asound.conf"
+_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+
+
+def is_valid_mac(mac: str | None) -> bool:
+    """True if mac is a well-formed Bluetooth address (AA:BB:CC:DD:EE:FF).
+
+    Guards against the ``bluetoothctl info ""`` quirk, where an empty
+    address returns another device's info and makes connect() "succeed"
+    with an empty MAC, poisoning history, settings and asound.conf.
+    """
+    return bool(mac) and bool(_MAC_RE.match(mac))
 
 
 def _asound_conf_content(mac: str) -> str:
@@ -105,7 +116,11 @@ def connect(mac: str) -> dict[str, Any]:
 
     On success the device becomes the app's default speaker and is saved to
     the fast-connect history.
+
+    Raises ValueError if mac is not a well-formed Bluetooth address.
     """
+    if not is_valid_mac(mac):
+        raise ValueError(f"invalid bluetooth address: {mac!r}")
     info = _device_info(mac)
     if not info["paired"]:
         _run(["bluetoothctl", "pair", mac], timeout=60)
@@ -156,16 +171,24 @@ def load_default_speaker() -> None:
     Also reconciles /etc/asound.conf so the system default output matches,
     and syncs the saved volume with the speaker's actual volume so the UI
     reflects reality after an app restart.
+
+    Entries with an invalid (e.g. empty) MAC are dropped so a poisoned
+    history can never propagate into settings.speaker_mac or asound.conf.
     """
-    history = _load_history()
-    if history:
-        settings.speaker_mac = history[0]["mac"]
-        if get_system_speaker() != settings.speaker_mac:
-            set_system_speaker(settings.speaker_mac)
-        actual = speaker.get_volume(settings.speaker_mac)
-        if actual is not None:
-            save_volume(settings.speaker_mac, actual)
-        log.info("Default speaker set to %s (%s)", history[0]["name"], history[0]["mac"])
+    raw = _load_history()
+    history = [d for d in raw if is_valid_mac(d.get("mac"))]
+    if len(history) != len(raw):
+        log.warning("Dropped %d BT history entries with invalid MAC", len(raw) - len(history))
+        _write_history(history)
+    if not history:
+        return
+    settings.speaker_mac = history[0]["mac"]
+    if get_system_speaker() != settings.speaker_mac:
+        set_system_speaker(settings.speaker_mac)
+    actual = speaker.get_volume(settings.speaker_mac)
+    if actual is not None:
+        save_volume(settings.speaker_mac, actual)
+    log.info("Default speaker set to %s (%s)", history[0]["name"], history[0]["mac"])
 
 
 def _history_path() -> str:
@@ -181,7 +204,19 @@ def _load_history() -> list[dict[str, Any]]:
         return []
 
 
+def _write_history(devices: list[dict[str, Any]]) -> None:
+    """Persist the device list to the history file."""
+    try:
+        with open(_history_path(), "w", encoding="utf-8") as f:
+            json.dump({"devices": devices}, f, indent=2)
+    except OSError as exc:
+        log.warning("Failed to save BT history: %s", exc)
+
+
 def _save_history(mac: str, name: str) -> None:
+    if not is_valid_mac(mac):
+        log.warning("Refusing to save BT history entry with invalid MAC %r", mac)
+        return
     history = _load_history()
     existing = next((d for d in history if d["mac"] == mac), {})
     history = [d for d in history if d["mac"] != mac]
@@ -189,12 +224,7 @@ def _save_history(mac: str, name: str) -> None:
     if "volume" in existing:
         entry["volume"] = existing["volume"]
     history.insert(0, entry)
-    history = history[:_HISTORY_MAX]
-    try:
-        with open(_history_path(), "w", encoding="utf-8") as f:
-            json.dump({"devices": history}, f, indent=2)
-    except OSError as exc:
-        log.warning("Failed to save BT history: %s", exc)
+    _write_history(history[:_HISTORY_MAX])
 
 
 def _get_history_volume(mac: str) -> int | None:
@@ -207,6 +237,9 @@ def _get_history_volume(mac: str) -> int | None:
 
 def save_volume(mac: str, volume: int) -> None:
     """Persist the volume for a device so it is re-applied on connect."""
+    if not is_valid_mac(mac):
+        log.warning("Ignoring volume save for invalid MAC %r", mac)
+        return
     history = _load_history()
     for d in history:
         if d["mac"] == mac:
@@ -214,8 +247,4 @@ def save_volume(mac: str, volume: int) -> None:
             break
     else:
         history.insert(0, {"mac": mac, "name": mac, "last_connected": int(time.time()), "volume": volume})
-    try:
-        with open(_history_path(), "w", encoding="utf-8") as f:
-            json.dump({"devices": history}, f, indent=2)
-    except OSError as exc:
-        log.warning("Failed to save BT history: %s", exc)
+    _write_history(history)

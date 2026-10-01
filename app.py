@@ -39,14 +39,61 @@ from models import (
 from services import bluetooth, groq_llm, speaker, story_narrator, text_source, voices
 from services.audio import NarratorPipeline, _ensure_speaker_connected, is_segment_file
 
+def _resolve_level(name: str) -> int:
+    """Map a level name (DEBUG, INFO, ...) to its int; fall back to INFO."""
+    level = getattr(logging, str(name).upper(), None)
+    return level if isinstance(level, int) else logging.INFO
+
+
+_LEVEL = _resolve_level(settings.log_level)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=_LEVEL,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
         RotatingFileHandler("/tmp/app_edgetts.log", maxBytes=1_000_000, backupCount=2),
     ],
 )
+# Handler levels gate records that are downgraded after creation (uvicorn
+# access): at INFO they drop DEBUG records, at DEBUG they pass them.
+for _handler in logging.getLogger().handlers:
+    _handler.setLevel(_LEVEL)
+
+
+class _UvicornAccessToDebug(logging.Filter):
+    """Emit uvicorn's per-request access records at DEBUG instead of INFO.
+
+    Noisy lines like '192.168.1.147:63981 - "GET /api/bt/status ..." 200'
+    then only appear when log_level=DEBUG; app-level request logging
+    (log_requests middleware) still applies its own DEBUG-for-chatty rule.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "uvicorn.access" and record.levelno <= logging.INFO:
+            record.levelno = logging.DEBUG
+            record.levelname = "DEBUG"
+        return True
+
+
+def _route_uvicorn_logging() -> None:
+    """Send uvicorn's loggers through the app's root handlers.
+
+    Uvicorn installs its own handlers/levels via dictConfig; drop them so
+    verbosity is governed by a single place (settings.log_level) and access
+    records reach both the console and /tmp/app_edgetts.log.
+    """
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _UvicornAccessToDebug) for f in access.filters):
+        access.addFilter(_UvicornAccessToDebug())
+    for name in ("uvicorn.access", "uvicorn.error", "uvicorn"):
+        lg = logging.getLogger(name)
+        lg.handlers.clear()
+        lg.propagate = True
+        lg.setLevel(_LEVEL)
+
+
+_route_uvicorn_logging()
 log = logging.getLogger(__name__)
 
 _pipeline: NarratorPipeline | None = None
@@ -195,6 +242,8 @@ def bt_scan():
 
 @app.post("/api/bt/connect", response_model=BTConnectResponse)
 def bt_connect(req: BTConnectRequest):
+    if not bluetooth.is_valid_mac(req.mac):
+        raise HTTPException(400, f"invalid bluetooth address: {req.mac!r}")
     info = bluetooth.connect(req.mac)
     return BTConnectResponse(
         ok=True,
@@ -444,22 +493,36 @@ async def speak(req: SpeakRequest):
 async def download(speak_id: str):
     if not _is_valid_speak_id(speak_id):
         raise HTTPException(404, "file not found")
-    path = os.path.join(settings.export_dir, f"{speak_id}.mp3")
-    if not os.path.exists(path):
-        # URL-speak archives keep segments under speak_text_dir; serve the
-        # combined file if a replay already produced it, else the first segment.
-        archive = os.path.join(settings.speak_text_dir, speak_id)
-        combined = os.path.join(archive, "combined.mp3")
-        if os.path.exists(combined):
-            path = combined
-        else:
-            seg_dir = os.path.join(archive, "segments")
-            segs = sorted(f for f in os.listdir(seg_dir) if is_segment_file(f)) if os.path.isdir(seg_dir) else []
-            if segs:
-                path = os.path.join(seg_dir, segs[0])
-            else:
-                raise HTTPException(404, "file not found")
+    path = _download_path(speak_id)
+    # The file may appear a moment later while synthesis is still running:
+    # poll briefly instead of returning an immediate 404.
+    for _ in range(20):
+        if path:
+            break
+        status = _get_pipeline().get_status()
+        if not (status["state"] == "synthesizing" and status["speak_id"] == speak_id):
+            break
+        await asyncio.sleep(0.5)
+        path = _download_path(speak_id)
+    if not path:
+        raise HTTPException(404, "file not found")
     return FileResponse(path, media_type="audio/mpeg", filename=f"{speak_id}.mp3")
+
+
+def _download_path(speak_id: str) -> str | None:
+    """Existing MP3 for a speak: export, combined archive, or first segment."""
+    path = os.path.join(settings.export_dir, f"{speak_id}.mp3")
+    if os.path.exists(path):
+        return path
+    # URL-speak archives keep segments under speak_text_dir; serve the
+    # combined file if a replay already produced it, else the first segment.
+    archive = os.path.join(settings.speak_text_dir, speak_id)
+    combined = os.path.join(archive, "combined.mp3")
+    if os.path.exists(combined):
+        return combined
+    seg_dir = os.path.join(archive, "segments")
+    segs = sorted(f for f in os.listdir(seg_dir) if is_segment_file(f)) if os.path.isdir(seg_dir) else []
+    return os.path.join(seg_dir, segs[0]) if segs else None
 
 
 def _extract_text(req: SpeakRequest) -> str:
@@ -522,4 +585,6 @@ def _purge_exports():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    # log_config=None: keep the app's logging wiring (_route_uvicorn_logging)
+    # instead of uvicorn reinstalling its own handlers/levels.
+    uvicorn.run(app, host=settings.host, port=settings.port, log_config=None)
